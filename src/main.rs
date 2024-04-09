@@ -1,13 +1,17 @@
 use snapcast_client::client::Client;
+use snapcast_client::decoder::{Decode, Decoder};
 use snapcast_client::playback::Player;
 use snapcast_client::proto::{ServerMessage, TimeVal};
 
-use snapcast_client::decoder::{Decode, Decoder};
+use esp_idf_hal::peripherals::Peripherals;
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp_idf_sys::{vPortGetHeapStats, HeapStats_t};
 
 use std::sync::{mpsc, Arc, Mutex};
 use std::time;
 
 mod player;
+mod wifi;
 use player::I2sPlayer;
 
 fn handle_samples<P: Player>(
@@ -21,23 +25,36 @@ fn handle_samples<P: Player>(
     let mut samples_out = vec![0; 4096];
 
     let mut player_lat_ms: u16 = 1;
+    //let mut hs = HeapStats_t::default();
     while let Ok((client_audible_ts, samples)) = sample_rx.recv() {
         let mut valid = true;
+        let mut remaining = TimeVal { sec: 0, usec: 0 };
         loop {
-            let remaining = client_audible_ts - time_base_c.elapsed().into();
+            //let h = unsafe { vPortGetHeapStats(&mut hs) };
+            //println!("HS {:?}", h);
+            remaining = client_audible_ts - time_base_c.elapsed().into();
             if remaining.sec < 0 {
                 valid = false;
                 break;
             }
 
-            if remaining.millis().unwrap() <= player_lat_ms {
-                break;
+            // FIXME, crashes often
+            match remaining.millis() {
+                Ok(v) => {
+                    if v <= player_lat_ms {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    println!("Failed to call millis: {}", e);
+                    break;
+                }
             }
-            std::thread::sleep(time::Duration::from_millis(1));
+            std::thread::sleep(time::Duration::from_micros(499));
         }
 
         if !valid {
-            println!("aaa in the past");
+            println!("aaa in the past {:?}", remaining);
             continue;
         }
 
@@ -52,10 +69,12 @@ fn handle_samples<P: Player>(
         player_lat_ms = std::cmp::max(1, p.latency_ms().unwrap());
         let decoded_sample_c = dec.decode_sample(&samples, &mut samples_out).unwrap();
         let sample = &samples_out[0..decoded_sample_c];
-        p.play().unwrap();
         p.write(sample).unwrap();
     }
 }
+
+const SSID: &'static str = env!("SSID");
+const PASS: &'static str = env!("PASS");
 
 fn main() -> anyhow::Result<()> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
@@ -66,15 +85,27 @@ fn main() -> anyhow::Result<()> {
     esp_idf_svc::log::EspLogger::initialize_default();
 
     log::info!("Hello, world!");
+    let mut peripherals = Peripherals::take().unwrap();
+
+    let i2s = peripherals.i2s0;
+    let dout = peripherals.pins.gpio2;
+    let bclk = peripherals.pins.gpio4;
+    let ws = peripherals.pins.gpio15;
+    let player = I2sPlayer::new(i2s, dout, bclk, ws);
+
+    let nvsp = EspDefaultNvsPartition::take().unwrap();
+    wifi::configure(SSID, PASS, nvsp, &mut peripherals.modem).expect("Could not configure wifi");
 
     let client = Client::new("99:22:33:44:55:66".into(), "framework".into());
+    println!("Connecting!");
     let mut client = client.connect("192.168.2.131:1704")?;
+    println!("Connected!");
     let time_base_c = client.time_base();
 
     let dec: Arc<Mutex<Option<Decoder>>> = Arc::new(Mutex::new(None));
     let dec_2 = dec.clone();
 
-    let player: Arc<Mutex<Option<I2sPlayer>>> = Arc::new(Mutex::new(None));
+    let player: Arc<Mutex<Option<I2sPlayer>>> = Arc::new(Mutex::new(Some(player)));
     let player_2 = player.clone();
 
     let mut buffer_ms = TimeVal {
@@ -83,7 +114,7 @@ fn main() -> anyhow::Result<()> {
     };
     let mut local_latency = TimeVal { sec: 0, usec: 0 };
 
-    let (sample_tx, sample_rx) = mpsc::channel::<(TimeVal, Vec<u8>)>();
+    let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Vec<u8>)>(8);
     std::thread::spawn(move || handle_samples(sample_rx, time_base_c, player, dec));
 
     loop {
@@ -92,13 +123,20 @@ fn main() -> anyhow::Result<()> {
         match msg {
             ServerMessage::CodecHeader(ch) => {
                 _ = dec_2.lock().unwrap().insert(Decoder::new(&ch)?);
-                let p = I2sPlayer::new(&ch);
-                _ = player_2.lock().unwrap().insert(p);
+                let mut _a = player_2.lock().unwrap();
+                let _p = _a.as_mut().unwrap();
+                {
+                    _p.init(&ch);
+                    _p.play().unwrap();
+                }
             }
             ServerMessage::WireChunk(wc) => {
                 let t_s = wc.timestamp;
                 let t_c = t_s - median_tbase;
                 let audible_at = t_c + buffer_ms - local_latency;
+                // TODO: maybe circular buffer and pass an index?
+                // unbounded queuing wouldn't be good; blocking at n-queue-depth is also maybe not
+                // great??
                 sample_tx.send((audible_at, wc.payload.to_vec()))?;
             }
 

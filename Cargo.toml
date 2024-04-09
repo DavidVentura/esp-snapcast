@@ -29,6 +29,8 @@ esp-idf-svc = { version = "0.48", default-features = false }
 snapcast-client = { version = "0.1.0", path = "../snapcast-client", features = [] } # "opus"
 anyhow = "1.0.81"
 esp-idf-hal = "0.43.1"
+esp-idf-sys = "0.34.1"
+heapless = "0.8.0"
 
 [build-dependencies]
 embuild = "0.31.3"
