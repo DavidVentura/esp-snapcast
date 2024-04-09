@@ -5,7 +5,6 @@ use snapcast_client::proto::{ServerMessage, TimeVal};
 
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_sys::{vPortGetHeapStats, HeapStats_t};
 
 use std::sync::{mpsc, Arc, Mutex};
 use std::time;
@@ -30,15 +29,15 @@ fn handle_samples<P: Player>(
         let mut valid = true;
         let mut remaining = TimeVal { sec: 0, usec: 0 };
         loop {
-            //let h = unsafe { vPortGetHeapStats(&mut hs) };
-            //println!("HS {:?}", h);
             remaining = client_audible_ts - time_base_c.elapsed().into();
-            if remaining.sec < 0 {
+            let abs = remaining.abs();
+            if remaining.sec < 0 && (abs.sec > 0 || abs.usec > 10_000) {
+                // maybe 10ms is ok? probably not
                 valid = false;
                 break;
             }
 
-            // FIXME, crashes often
+            // FIXME, fails often on startup
             match remaining.millis() {
                 Ok(v) => {
                     if v <= player_lat_ms {
@@ -54,7 +53,7 @@ fn handle_samples<P: Player>(
         }
 
         if !valid {
-            println!("aaa in the past {:?}", remaining);
+            println!("aaa in the past {:?}", remaining.abs());
             continue;
         }
 
@@ -114,13 +113,22 @@ fn main() -> anyhow::Result<()> {
     };
     let mut local_latency = TimeVal { sec: 0, usec: 0 };
 
-    let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Vec<u8>)>(8);
+    // 5.6KB buffs
+    // #  = bad/good
+    // 4  = 403/502 - 418/500
+    // 8  = 308/501
+    // 16 = 286/500
+    let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Vec<u8>)>(4);
     std::thread::spawn(move || handle_samples(sample_rx, time_base_c, player, dec));
 
+    let mut queue_good = 0;
+    let mut queue_bad = 0;
     loop {
         let median_tbase = client.latency_to_server();
         let msg = client.tick()?;
         match msg {
+            // TODO: Need to mute player / play a set of 0's if it's been a while without packets
+            // (buflen + 100ms?)
             ServerMessage::CodecHeader(ch) => {
                 _ = dec_2.lock().unwrap().insert(Decoder::new(&ch)?);
                 let mut _a = player_2.lock().unwrap();
@@ -134,9 +142,8 @@ fn main() -> anyhow::Result<()> {
                 let t_s = wc.timestamp;
                 let t_c = t_s - median_tbase;
                 let audible_at = t_c + buffer_ms - local_latency;
-                // TODO: maybe circular buffer and pass an index?
-                // unbounded queuing wouldn't be good; blocking at n-queue-depth is also maybe not
-                // great??
+                // This will sometimes block on send(), to minimize memory usage (number of buffers
+                // in mem).
                 sample_tx.send((audible_at, wc.payload.to_vec()))?;
             }
 
