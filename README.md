@@ -3,6 +3,7 @@
 Supported codecs:
 - PCM
 - OPUS (builds, but crashes instantly)
+- Flac (my implementation issues lead to low quality, kinda works)
 
 Supported backends:
 - I2S
@@ -15,7 +16,12 @@ export CXX=xtensa-esp32-elf-g++
 
 ## Bandwidth
 
-Using PCM on stereo, at 48KHz requires 1.5Mbit/s, which seems perfectly fine on the ESP32.
+On stereo at 48KHz:
+
+- PCM requires ~1.6Mbit/s
+- Flac requires ~1Mbit/s
+
+Both of which seem perfectly fine on the ESP32.
 
 ## Hardware
 
