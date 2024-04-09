@@ -27,7 +27,7 @@ fn handle_samples<P: Player>(
     //let mut hs = HeapStats_t::default();
     while let Ok((client_audible_ts, samples)) = sample_rx.recv() {
         let mut valid = true;
-        let mut remaining = TimeVal { sec: 0, usec: 0 };
+        let mut remaining: TimeVal;
         loop {
             remaining = client_audible_ts - time_base_c.elapsed().into();
             let abs = remaining.abs();
@@ -53,7 +53,11 @@ fn handle_samples<P: Player>(
         }
 
         if !valid {
-            println!("aaa in the past {:?}", remaining.abs());
+            println!(
+                "aaa in the past {:?} - abs = {:?}",
+                remaining,
+                remaining.abs()
+            );
             continue;
         }
 
@@ -121,8 +125,6 @@ fn main() -> anyhow::Result<()> {
     let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Vec<u8>)>(4);
     std::thread::spawn(move || handle_samples(sample_rx, time_base_c, player, dec));
 
-    let mut queue_good = 0;
-    let mut queue_bad = 0;
     loop {
         let median_tbase = client.latency_to_server();
         let msg = client.tick()?;
@@ -150,8 +152,14 @@ fn main() -> anyhow::Result<()> {
             ServerMessage::ServerSettings(s) => {
                 buffer_ms = TimeVal::from_millis(s.bufferMs as i32);
                 local_latency = TimeVal::from_millis(s.latency as i32);
-                println!("local lat now {local_latency:?}");
-                // TODO volume
+                println!("local lat now {local_latency:?}, vol at {}", s.volume);
+                player_2
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .set_volume(s.volume)
+                    .unwrap();
             }
             _ => (),
         }
