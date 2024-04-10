@@ -1,6 +1,6 @@
 use esp_idf_hal::delay::TickType;
 use esp_idf_hal::gpio;
-use esp_idf_hal::gpio::{Gpio15, Gpio2, Gpio4};
+use esp_idf_hal::gpio::{Gpio18, Gpio19, Gpio21};
 use esp_idf_hal::i2s;
 use esp_idf_hal::i2s::config;
 use esp_idf_hal::i2s::I2S0;
@@ -13,7 +13,7 @@ pub struct I2sPlayer {
     d: i2s::I2sDriver<'static, i2s::I2sTx>,
     is_playing: bool,
     volume: i16,
-    vol_adj_buf: Vec<i16>,
+    sample_rate: u16,
 }
 
 // Larger values allow for more fine-grained step, but there's loss of precision
@@ -26,7 +26,7 @@ impl I2sPlayer {
         //
     }
 
-    pub fn new(i2s: I2S0, dout: Gpio2, bclk: Gpio4, ws: Gpio15) -> I2sPlayer {
+    pub fn new(i2s: I2S0, dout: Gpio19, bclk: Gpio21, ws: Gpio18) -> I2sPlayer {
         let mclk: Option<gpio::AnyIOPin> = None;
         let i2s_config = config::StdConfig::new(
             config::Config::default(),
@@ -43,30 +43,28 @@ impl I2sPlayer {
             d: driver,
             is_playing: false,
             volume: 0,
-            vol_adj_buf: vec![0; 4096],
+            sample_rate: 48000, // FIXME same as the other 48000
         };
-        ret.set_volume(40);
+        ret.set_volume(40).unwrap();
         ret
     }
 }
 impl Player for I2sPlayer {
     fn play(&mut self) -> anyhow::Result<()> {
         if !self.is_playing {
-            println!("Enabling TX!");
             self.d.tx_enable().expect("Failed to tx_enable");
-            println!("Enabled TX!");
             self.is_playing = true;
         }
         Ok(())
     }
 
-    fn write(&mut self, buf: &[i16]) -> anyhow::Result<()> {
-        // SAFETY: it's always safe to align i16 to u8
-        for (i, s) in buf.iter().enumerate() {
-            self.vol_adj_buf[i] = (s / VOL_STEP_COUNT) * self.volume;
+    fn write(&mut self, buf: &mut [i16]) -> anyhow::Result<()> {
+        for s in buf.iter_mut() {
+            *s = (*s / VOL_STEP_COUNT) * self.volume;
         }
 
-        let (_, converted, _) = unsafe { self.vol_adj_buf[0..buf.len()].align_to::<u8>() };
+        // SAFETY: it's always safe to align i16 to u8
+        let (_, converted, _) = unsafe { buf[0..buf.len()].align_to::<u8>() };
 
         self.d.write_all(converted, Self::BLOCK_TIME.into())?;
         Ok(())
@@ -87,5 +85,9 @@ impl Player for I2sPlayer {
         self.volume = scaled.round() as i16;
         println!("vol is now {}/{}", self.volume, VOL_STEP_COUNT,);
         Ok(())
+    }
+
+    fn sample_rate(&self) -> u16 {
+        self.sample_rate
     }
 }
