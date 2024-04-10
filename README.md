@@ -2,8 +2,8 @@
 
 Supported codecs:
 - PCM
+- Flac
 - OPUS (builds, but crashes instantly)
-- Flac (my implementation issues lead to low quality, kinda works)
 
 Supported backends:
 - I2S
