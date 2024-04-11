@@ -151,12 +151,13 @@ fn main() -> anyhow::Result<()> {
         let dec2 = dec.clone();
         let dec3 = dec.clone();
         let decref = &mut dec_samples_buf;
+
         std::thread::scope(|s| {
             s.spawn(move || handle_samples(decref, sample_rx, time_base_c, player_2, dec2));
 
             let r = connection_main(client, player_3, sample_tx, dec3);
             log::error!("Connection dropped: {r:?}");
-            // sample_tx is dropped here - sample_rx dies -> thread expires
+            // sample_tx is dropped here - sample_rx dies -> thread expires -> scope finishes
         });
         // reset decoder
         dec.lock().unwrap().take();
@@ -177,8 +178,7 @@ fn connection_main(
     let time_base_c = client.time_base();
     loop {
         let in_sync = client.synchronized();
-        let msg = client.tick()?; // TODO: this will break on server restarts
-                                  // and the esp won't auto-reboot
+        let msg = client.tick()?;
         match msg {
             Message::CodecHeader(ch) => {
                 log::info!("Initializing player with: {ch:?}");
