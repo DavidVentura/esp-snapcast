@@ -35,7 +35,7 @@ pub(crate) fn configure(
     wifi.wait_netif_up()?;
 
     let ip_info = wifi.wifi().sta_netif().get_ip_info()?;
-    println!("IP config: {:?}", ip_info);
+    log::info!("IP config: {:?}", ip_info);
     //Ok(wifi)
     std::mem::forget(wifi);
     Ok(())

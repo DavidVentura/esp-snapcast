@@ -82,7 +82,7 @@ fn handle_samples<P: Player>(
         }
         let decoded_sample_c = dec.decode_sample(&samples, &mut samples_out).unwrap();
         if skip_samples as usize > decoded_sample_c {
-            println!("Tried to skip way too much, skipping the whole sample");
+            log::info!("Tried to skip way too much, skipping the whole sample");
             continue;
         }
         let sample = &mut samples_out[0..decoded_sample_c];
@@ -97,8 +97,8 @@ fn main() -> anyhow::Result<()> {
 
     // Bind the log crate to the ESP Logging facilities
     esp_idf_svc::log::EspLogger::initialize_default();
+    esp_idf_svc::log::EspLogger.set_target_level("target", log::LevelFilter::Info)?;
 
-    log::info!("Hello, world!");
     let mut peripherals = Peripherals::take().unwrap();
 
     let i2s = peripherals.i2s0;
@@ -141,6 +141,7 @@ fn main() -> anyhow::Result<()> {
             // TODO: Need to mute player / play a set of 0's if it's been a while without packets
             // (buflen + 100ms?)
             ServerMessage::CodecHeader(ch) => {
+                log::info!("Initializing player with: {ch:?}");
                 _ = dec_2.lock().unwrap().insert(Decoder::new(&ch)?);
                 let mut _a = player_2.lock().unwrap();
                 let _p = _a.as_mut().unwrap();
@@ -164,7 +165,7 @@ fn main() -> anyhow::Result<()> {
             ServerMessage::ServerSettings(s) => {
                 buffer_ms = TimeVal::from_millis(s.bufferMs as i32);
                 local_latency = TimeVal::from_millis(s.latency as i32);
-                println!("local lat now {local_latency:?}, vol at {}", s.volume);
+                log::info!("local lat now {local_latency:?}, vol at {}", s.volume);
                 player_2
                     .lock()
                     .unwrap()
