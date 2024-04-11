@@ -15,11 +15,11 @@ use player::I2sPlayer;
 
 use esp_idf_svc::sys::esp_get_free_heap_size;
 
-const SSID: &'static str = env!("SSID");
-const PASS: &'static str = env!("PASS");
+const SSID: &str = env!("SSID");
+const PASS: &str = env!("PASS");
 
 fn handle_samples<P: Player>(
-    dec_sample_buf: &mut Vec<i16>,
+    dec_sample_buf: &mut [i16],
     sample_rx: mpsc::Receiver<(TimeVal, TimeVal, Vec<u8>)>,
     time_base_c: time::Instant,
     player: Arc<Mutex<Option<P>>>,
@@ -66,7 +66,7 @@ fn handle_samples<P: Player>(
                     std::thread::sleep(time::Duration::from_micros(499));
                 }
             } else {
-                let ms_to_skip = (remaining.usec / 1000).abs() as u16;
+                let ms_to_skip = (remaining.usec / 1000).unsigned_abs() as u16;
                 skip_samples = ms_to_skip * samples_per_ms;
                 log::info!(
                     "skipping {skip_samples} samples = {ms_to_skip}ms - at queue time was {:?}",
@@ -151,7 +151,7 @@ fn main() -> anyhow::Result<()> {
         let dec2 = dec.clone();
         let dec3 = dec.clone();
         let decref = &mut dec_samples_buf;
-        let j = std::thread::scope(|s| {
+        std::thread::scope(|s| {
             s.spawn(move || handle_samples(decref, sample_rx, time_base_c, player_2, dec2));
 
             let r = connection_main(client, player_3, sample_tx, dec3);
