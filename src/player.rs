@@ -34,8 +34,9 @@ impl I2sPlayer {
         ws: impl Peripheral<P = impl OutputPin + InputPin> + 'static,
     ) -> I2sPlayer {
         let mclk: Option<gpio::AnyIOPin> = None;
+
         let i2s_config = config::StdConfig::new(
-            config::Config::default(),
+            config::Config::default().auto_clear(true),
             config::StdClkConfig::from_sample_rate_hz(48000), // FIXME: how to init in the calling loop?
             config::StdSlotConfig::philips_slot_default(
                 config::DataBitWidth::Bits16,
@@ -43,7 +44,10 @@ impl I2sPlayer {
             ),
             config::StdGpioConfig::default(),
         );
-        let driver = i2s::I2sDriver::new_std_tx(i2s, &i2s_config, bclk, dout, mclk, ws).unwrap();
+        let mut driver =
+            i2s::I2sDriver::new_std_tx(i2s, &i2s_config, bclk, dout, mclk, ws).unwrap();
+        let data: Vec<u8> = vec![0; 1024]; // play silence on startup
+        driver.preload_data(&data).unwrap();
 
         let mut ret = I2sPlayer {
             d: driver,
