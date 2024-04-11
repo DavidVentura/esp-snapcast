@@ -46,8 +46,11 @@ impl I2sPlayer {
         );
         let mut driver =
             i2s::I2sDriver::new_std_tx(i2s, &i2s_config, bclk, dout, mclk, ws).unwrap();
-        let data: Vec<u8> = vec![0; 1024]; // play silence on startup
-        driver.preload_data(&data).unwrap();
+        let data: Vec<u8> = vec![0; 128]; // play silence on startup
+
+        for _ in 0..64 {
+            driver.preload_data(&data).unwrap();
+        }
 
         let mut ret = I2sPlayer {
             d: driver,
