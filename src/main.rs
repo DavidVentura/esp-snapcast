@@ -135,6 +135,7 @@ fn main() -> anyhow::Result<()> {
 
     loop {
         let median_tbase = client.latency_to_server();
+        let in_sync = client.synchronized();
         let msg = client.tick()?;
         match msg {
             // TODO: Need to mute player / play a set of 0's if it's been a while without packets
@@ -155,7 +156,9 @@ fn main() -> anyhow::Result<()> {
                 // This will sometimes block on send()
                 // to to minimize memory usage (number of buffers in mem).
                 // Effectively using the network as a buffer
-                sample_tx.send((audible_at, wc.payload.to_vec()))?;
+                if in_sync {
+                    sample_tx.send((audible_at, wc.payload.to_vec()))?;
+                }
             }
 
             ServerMessage::ServerSettings(s) => {
