@@ -133,10 +133,9 @@ fn main() -> anyhow::Result<()> {
     };
     let mut local_latency = TimeVal { sec: 0, usec: 0 };
 
-    // Experimentally, with a queue depth of 4, 50% of the packets block for ~30ms.
-    // With a queue depth of 16, 36% of the packets block, and it requires most of the
-    // system's memory.
-    let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, TimeVal, Vec<u8>)>(4);
+    // Validated experimentally -- with a queue depth of 4, "once in a while", a packet
+    // would only be queued after it's deadline had passed
+    let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, TimeVal, Vec<u8>)>(8);
     std::thread::spawn(move || handle_samples(sample_rx, time_base_c, player, dec));
 
     loop {
