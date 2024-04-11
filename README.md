@@ -25,7 +25,17 @@ Both of which seem perfectly fine on the ESP32.
 
 ## Hardware
 
-I use an [UDA1334A](https://nl.aliexpress.com/item/1005006140641304.html) module with an [ESP32-WROOM-32](https://nl.aliexpress.com/item/1005006500507950.html).
+I use an [UDA1334A](https://nl.aliexpress.com/item/1005006140641304.html) module with an [ESP32-WROOM-32](https://nl.aliexpress.com/item/1005006500507950.html) (a 320KiB RAM model).
+
+### Memory usage
+
+Basic heap analysis:
+
+* On startup, heap low water mark 273KiB
+* After setup, heap low water mark 188KiB
+* With 150ms snapcast buffer: heap low water mark: 167KiB
+* With 500ms snapcast buffer: heap low water mark: 98KiB
+* With 750ms snapcast buffer: heap low water mark: 51KiB - Random OOM?
 
 ## Known issues
 
