@@ -1,7 +1,7 @@
-use snapcast_client::client::Client;
+use snapcast_client::client::{Client, Message};
 use snapcast_client::decoder::{Decode, Decoder};
 use snapcast_client::playback::Player;
-use snapcast_client::proto::{ServerMessage, TimeVal};
+use snapcast_client::proto::TimeVal;
 
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
@@ -127,25 +127,18 @@ fn main() -> anyhow::Result<()> {
     let player: Arc<Mutex<Option<I2sPlayer>>> = Arc::new(Mutex::new(Some(player)));
     let player_2 = player.clone();
 
-    let mut buffer_ms = TimeVal {
-        sec: 0,
-        usec: 999_999,
-    };
-    let mut local_latency = TimeVal { sec: 0, usec: 0 };
-
     // Validated experimentally -- with a queue depth of 4, "once in a while", a packet
     // would only be queued after it's deadline had passed
     let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, TimeVal, Vec<u8>)>(8);
     std::thread::spawn(move || handle_samples(sample_rx, time_base_c, player, dec));
 
     loop {
-        let median_tbase = client.latency_to_server();
         let in_sync = client.synchronized();
         let msg = client.tick()?;
         match msg {
             // TODO: Need to mute player / play a set of 0's if it's been a while without packets
             // (buflen + 100ms?)
-            ServerMessage::CodecHeader(ch) => {
+            Message::CodecHeader(ch) => {
                 log::info!("Initializing player with: {ch:?}");
                 _ = dec_2.lock().unwrap().insert(Decoder::new(&ch)?);
                 let mut _a = player_2.lock().unwrap();
@@ -155,10 +148,7 @@ fn main() -> anyhow::Result<()> {
                     _p.play().unwrap();
                 }
             }
-            ServerMessage::WireChunk(wc) => {
-                let t_s = wc.timestamp;
-                let t_c = t_s - median_tbase;
-                let audible_at = t_c + buffer_ms - local_latency;
+            Message::WireChunk(wc, audible_at) => {
                 // This will sometimes block on send()
                 // to to minimize memory usage (number of buffers in mem).
                 // Effectively using the network as a buffer
@@ -168,19 +158,16 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            ServerMessage::ServerSettings(s) => {
-                buffer_ms = TimeVal::from_millis(s.bufferMs as i32);
-                local_latency = TimeVal::from_millis(s.latency as i32);
-                log::info!("local lat now {local_latency:?}, vol at {}", s.volume);
+            Message::PlaybackVolume(v) => {
                 player_2
                     .lock()
                     .unwrap()
                     .as_mut()
                     .unwrap()
-                    .set_volume(s.volume)
+                    .set_volume(v)
                     .unwrap();
             }
-            _ => (),
+            Message::Nothing => (),
         }
     }
 }
