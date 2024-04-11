@@ -17,7 +17,7 @@ const SSID: &'static str = env!("SSID");
 const PASS: &'static str = env!("PASS");
 
 fn handle_samples<P: Player>(
-    sample_rx: mpsc::Receiver<(TimeVal, Vec<u8>)>,
+    sample_rx: mpsc::Receiver<(TimeVal, TimeVal, Vec<u8>)>,
     time_base_c: time::Instant,
     player: Arc<Mutex<Option<P>>>,
     dec: Arc<Mutex<Option<Decoder>>>,
@@ -30,7 +30,7 @@ fn handle_samples<P: Player>(
     let mut player_lat_ms: u16 = 1;
     let mut samples_per_ms: u16 = 1; // irrelevant, will be overwritten
 
-    while let Ok((client_audible_ts, samples)) = sample_rx.recv() {
+    while let Ok((client_audible_ts, rem_at_queue_time, samples)) = sample_rx.recv() {
         let mut valid = true;
         let mut remaining: TimeVal;
 
@@ -43,7 +43,10 @@ fn handle_samples<P: Player>(
             }
 
             if remaining.sec != 0 {
-                println!("rem {remaining:?} too far away! hard cutting");
+                log::info!(
+                    "rem {remaining:?} too far away! hard cutting - at queue time was {:?}",
+                    rem_at_queue_time.abs()
+                );
                 valid = false;
                 break;
             }
@@ -59,7 +62,10 @@ fn handle_samples<P: Player>(
             } else {
                 let ms_to_skip = (remaining.usec / 1000).abs() as u16;
                 skip_samples = ms_to_skip * samples_per_ms;
-                println!("skipping {skip_samples} samples = {ms_to_skip}ms");
+                log::info!(
+                    "skipping {skip_samples} samples = {ms_to_skip}ms - at queue time was {:?}",
+                    rem_at_queue_time.abs()
+                );
                 break;
             }
         }
@@ -130,7 +136,7 @@ fn main() -> anyhow::Result<()> {
     // Experimentally, with a queue depth of 4, 50% of the packets block for ~30ms.
     // With a queue depth of 16, 36% of the packets block, and it requires most of the
     // system's memory.
-    let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Vec<u8>)>(4);
+    let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, TimeVal, Vec<u8>)>(4);
     std::thread::spawn(move || handle_samples(sample_rx, time_base_c, player, dec));
 
     loop {
@@ -158,7 +164,8 @@ fn main() -> anyhow::Result<()> {
                 // to to minimize memory usage (number of buffers in mem).
                 // Effectively using the network as a buffer
                 if in_sync {
-                    sample_tx.send((audible_at, wc.payload.to_vec()))?;
+                    let remaining_at_queue = audible_at - time_base_c.elapsed().into();
+                    sample_tx.send((audible_at, remaining_at_queue, wc.payload.to_vec()))?;
                 }
             }
 
