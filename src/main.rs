@@ -13,28 +13,34 @@ mod player;
 mod wifi;
 use player::I2sPlayer;
 
+use esp_idf_svc::sys::esp_get_free_heap_size;
+
 const SSID: &'static str = env!("SSID");
 const PASS: &'static str = env!("PASS");
 
 fn handle_samples<P: Player>(
+    mut dec_sample_buf: Vec<i16>,
     sample_rx: mpsc::Receiver<(TimeVal, TimeVal, Vec<u8>)>,
     time_base_c: time::Instant,
     player: Arc<Mutex<Option<P>>>,
     dec: Arc<Mutex<Option<Decoder>>>,
 ) {
-    // >= (960 * 2) for OPUS
-    // >= 2880 for PCM
-    // >= 4700 for flac
-    let mut samples_out = vec![0; 4700];
-
     let mut player_lat_ms: u16 = 1;
     let mut samples_per_ms: u16 = 1; // irrelevant, will be overwritten
+
+    let mut free_heap = unsafe { esp_get_free_heap_size() };
 
     while let Ok((client_audible_ts, rem_at_queue_time, samples)) = sample_rx.recv() {
         let mut valid = true;
         let mut remaining: TimeVal;
 
         let mut skip_samples = 0;
+
+        let free = unsafe { esp_get_free_heap_size() };
+        if free < free_heap {
+            log::debug!("heap low water mark: {free}");
+            free_heap = free;
+        }
         loop {
             remaining = client_audible_ts - time_base_c.elapsed().into();
             if remaining.sec == -1 && remaining.usec > 0 {
@@ -86,12 +92,12 @@ fn handle_samples<P: Player>(
         if samples_per_ms == 1 {
             samples_per_ms = p.sample_rate() / 1000;
         }
-        let decoded_sample_c = dec.decode_sample(&samples, &mut samples_out).unwrap();
+        let decoded_sample_c = dec.decode_sample(&samples, &mut dec_sample_buf).unwrap();
         if skip_samples as usize > decoded_sample_c {
             log::info!("Tried to skip way too much, skipping the whole sample");
             continue;
         }
-        let sample = &mut samples_out[0..decoded_sample_c];
+        let sample = &mut dec_sample_buf[0..decoded_sample_c];
         p.write(&mut sample[(skip_samples as usize)..]).unwrap();
     }
 }
@@ -105,6 +111,9 @@ fn main() -> anyhow::Result<()> {
     esp_idf_svc::log::EspLogger::initialize_default();
     esp_idf_svc::log::EspLogger.set_target_level("target", log::LevelFilter::Info)?;
 
+    let free = unsafe { esp_get_free_heap_size() };
+    log::info!("[startup] heap low water mark: {free}");
+
     let mut peripherals = Peripherals::take().unwrap();
 
     let i2s = peripherals.i2s0;
@@ -116,7 +125,7 @@ fn main() -> anyhow::Result<()> {
     let nvsp = EspDefaultNvsPartition::take().unwrap();
     wifi::configure(SSID, PASS, nvsp, &mut peripherals.modem).expect("Could not configure wifi");
 
-    let client = Client::new("99:22:33:44:55:66".into(), "framework".into());
+    let client = Client::new("99:22:33:44:55:66".into(), "esp32".into());
     // TODO: discover stream
     let mut client = client.connect("192.168.2.131:1704")?;
     let time_base_c = client.time_base();
@@ -128,16 +137,25 @@ fn main() -> anyhow::Result<()> {
     let player_2 = player.clone();
 
     // Validated experimentally -- with a queue depth of 4, "once in a while", a packet
-    // would only be queued after it's deadline had passed
-    let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, TimeVal, Vec<u8>)>(8);
-    std::thread::spawn(move || handle_samples(sample_rx, time_base_c, player, dec));
+    // would only be put onto the queue _after_ it's deadline had passed
+    let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, TimeVal, Vec<u8>)>(24);
+
+    // >= (960 * 2) for OPUS
+    // >= 2880 for PCM
+    // >= 4700 for flac
+    let dec_samples_buf = vec![0; 4700];
+
+    std::thread::spawn(move || {
+        handle_samples(dec_samples_buf, sample_rx, time_base_c, player, dec)
+    });
+    let free = unsafe { esp_get_free_heap_size() };
+    log::info!("[setup done] heap low water mark: {free}");
 
     loop {
         let in_sync = client.synchronized();
-        let msg = client.tick()?;
+        let msg = client.tick()?; // TODO: this will break on server restarts
+                                  // and the esp won't auto-reboot
         match msg {
-            // TODO: Need to mute player / play a set of 0's if it's been a while without packets
-            // (buflen + 100ms?)
             Message::CodecHeader(ch) => {
                 log::info!("Initializing player with: {ch:?}");
                 _ = dec_2.lock().unwrap().insert(Decoder::new(&ch)?);
