@@ -1,4 +1,4 @@
-use snapcast_client::client::{Client, Message};
+use snapcast_client::client::{Client, ConnectedClient, Message};
 use snapcast_client::decoder::{Decode, Decoder};
 use snapcast_client::playback::Player;
 use snapcast_client::proto::TimeVal;
@@ -6,7 +6,7 @@ use snapcast_client::proto::TimeVal;
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, mpsc::SyncSender, Arc, Mutex};
 use std::time;
 
 mod player;
@@ -19,7 +19,7 @@ const SSID: &'static str = env!("SSID");
 const PASS: &'static str = env!("PASS");
 
 fn handle_samples<P: Player>(
-    mut dec_sample_buf: Vec<i16>,
+    dec_sample_buf: &mut Vec<i16>,
     sample_rx: mpsc::Receiver<(TimeVal, TimeVal, Vec<u8>)>,
     time_base_c: time::Instant,
     player: Arc<Mutex<Option<P>>>,
@@ -38,7 +38,7 @@ fn handle_samples<P: Player>(
 
         let free = unsafe { esp_get_free_heap_size() };
         if free < free_heap {
-            log::debug!("heap low water mark: {free}");
+            log::info!("heap low water mark: {free}");
             free_heap = free;
         }
         loop {
@@ -92,7 +92,7 @@ fn handle_samples<P: Player>(
         if samples_per_ms == 1 {
             samples_per_ms = p.sample_rate() / 1000;
         }
-        let decoded_sample_c = dec.decode_sample(&samples, &mut dec_sample_buf).unwrap();
+        let decoded_sample_c = dec.decode_sample(&samples, dec_sample_buf).unwrap();
         if skip_samples as usize > decoded_sample_c {
             log::info!("Tried to skip way too much, skipping the whole sample");
             continue;
@@ -125,32 +125,56 @@ fn main() -> anyhow::Result<()> {
     let nvsp = EspDefaultNvsPartition::take().unwrap();
     wifi::configure(SSID, PASS, nvsp, &mut peripherals.modem).expect("Could not configure wifi");
 
-    let client = Client::new("99:22:33:44:55:66".into(), "esp32".into());
-    // TODO: discover stream
-    let mut client = client.connect("192.168.2.131:1704")?;
-    let time_base_c = client.time_base();
+    let mac = "99:22:33:44:55:66";
+    let name = "esp32";
 
     let dec: Arc<Mutex<Option<Decoder>>> = Arc::new(Mutex::new(None));
-    let dec_2 = dec.clone();
-
-    let player: Arc<Mutex<Option<I2sPlayer>>> = Arc::new(Mutex::new(Some(player)));
-    let player_2 = player.clone();
-
-    // Validated experimentally -- with a queue depth of 4, "once in a while", a packet
-    // would only be put onto the queue _after_ it's deadline had passed
-    let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, TimeVal, Vec<u8>)>(24);
 
     // >= (960 * 2) for OPUS
     // >= 2880 for PCM
     // >= 4700 for flac
-    let dec_samples_buf = vec![0; 4700];
+    let mut dec_samples_buf = vec![0; 4700];
 
-    std::thread::spawn(move || {
-        handle_samples(dec_samples_buf, sample_rx, time_base_c, player, dec)
-    });
+    let player: Arc<Mutex<Option<I2sPlayer>>> = Arc::new(Mutex::new(Some(player)));
+    loop {
+        // Validated experimentally -- with a queue depth of 4, "once in a while", a packet
+        // would only be put onto the queue _after_ it's deadline had passed
+        let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, TimeVal, Vec<u8>)>(24);
+        let client = Client::new(mac.into(), name.into());
+        // TODO: discover stream
+        let client = client.connect("192.168.2.131:1704")?;
+        let time_base_c = client.time_base();
+
+        let player_2 = player.clone();
+        let player_3 = player.clone();
+
+        let dec2 = dec.clone();
+        let dec3 = dec.clone();
+        let decref = &mut dec_samples_buf;
+        let j = std::thread::scope(|s| {
+            s.spawn(move || handle_samples(decref, sample_rx, time_base_c, player_2, dec2));
+
+            let r = connection_main(client, player_3, sample_tx, dec3);
+            log::error!("Connection dropped: {r:?}");
+            // sample_tx is dropped here - sample_rx dies -> thread expires
+        });
+        // reset decoder
+        dec.lock().unwrap().take();
+    }
+}
+
+fn connection_main(
+    mut client: ConnectedClient,
+    player: Arc<Mutex<Option<I2sPlayer>>>,
+    sample_tx: SyncSender<(TimeVal, TimeVal, Vec<u8>)>,
+    decoder: Arc<Mutex<Option<Decoder>>>,
+) -> anyhow::Result<()> {
+    log::info!("Starting a new connection");
+
     let free = unsafe { esp_get_free_heap_size() };
     log::info!("[setup done] heap low water mark: {free}");
 
+    let time_base_c = client.time_base();
     loop {
         let in_sync = client.synchronized();
         let msg = client.tick()?; // TODO: this will break on server restarts
@@ -158,8 +182,8 @@ fn main() -> anyhow::Result<()> {
         match msg {
             Message::CodecHeader(ch) => {
                 log::info!("Initializing player with: {ch:?}");
-                _ = dec_2.lock().unwrap().insert(Decoder::new(&ch)?);
-                let mut _a = player_2.lock().unwrap();
+                _ = decoder.lock().unwrap().insert(Decoder::new(&ch)?);
+                let mut _a = player.lock().unwrap();
                 let _p = _a.as_mut().unwrap();
                 {
                     _p.init(&ch);
@@ -177,7 +201,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             Message::PlaybackVolume(v) => {
-                player_2
+                player
                     .lock()
                     .unwrap()
                     .as_mut()
