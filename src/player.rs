@@ -1,9 +1,10 @@
 use esp_idf_hal::delay::TickType;
 use esp_idf_hal::gpio;
-use esp_idf_hal::gpio::{Gpio18, Gpio19, Gpio21};
+use esp_idf_hal::gpio::{InputPin, OutputPin};
 use esp_idf_hal::i2s;
 use esp_idf_hal::i2s::config;
 use esp_idf_hal::i2s::I2S0;
+use esp_idf_hal::peripheral::Peripheral;
 
 use snapcast_client::playback::Player;
 use snapcast_client::proto::CodecHeader;
@@ -26,7 +27,12 @@ impl I2sPlayer {
         //
     }
 
-    pub fn new(i2s: I2S0, dout: Gpio19, bclk: Gpio21, ws: Gpio18) -> I2sPlayer {
+    pub fn new(
+        i2s: I2S0,
+        dout: impl Peripheral<P = impl OutputPin + InputPin> + 'static,
+        bclk: impl Peripheral<P = impl OutputPin + InputPin> + 'static,
+        ws: impl Peripheral<P = impl OutputPin + InputPin> + 'static,
+    ) -> I2sPlayer {
         let mclk: Option<gpio::AnyIOPin> = None;
         let i2s_config = config::StdConfig::new(
             config::Config::default(),
