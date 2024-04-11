@@ -17,8 +17,8 @@ pub struct I2sPlayer {
     sample_rate: u16,
 }
 
-// Larger values allow for more fine-grained step, but there's loss of precision
-const VOL_STEP_COUNT: i16 = 32;
+// Powers of two _may_ make the division faster
+const VOL_STEP_COUNT: i16 = 128;
 
 impl I2sPlayer {
     const BLOCK_TIME: TickType = TickType::new(100_000_000);
@@ -46,11 +46,10 @@ impl I2sPlayer {
         );
         let mut driver =
             i2s::I2sDriver::new_std_tx(i2s, &i2s_config, bclk, dout, mclk, ws).unwrap();
-        let data: Vec<u8> = vec![0; 128]; // play silence on startup
 
-        for _ in 0..64 {
-            driver.preload_data(&data).unwrap();
-        }
+        // Clear TX buffers
+        let data: Vec<u8> = vec![0; 128];
+        while driver.preload_data(&data).unwrap() > 0 {}
 
         let mut ret = I2sPlayer {
             d: driver,
@@ -73,7 +72,7 @@ impl Player for I2sPlayer {
 
     fn write(&mut self, buf: &mut [i16]) -> anyhow::Result<()> {
         for s in buf.iter_mut() {
-            *s = (*s / VOL_STEP_COUNT) * self.volume;
+            *s = ((*s as i32 * self.volume as i32) / VOL_STEP_COUNT as i32) as i16;
         }
 
         // SAFETY: it's always safe to align i16 to u8
@@ -96,7 +95,7 @@ impl Player for I2sPlayer {
         let normalized_volume = (volume_float - 1.0) / 99.0;
         let scaled = normalized_volume.powf(2.0) * f64::from(VOL_STEP_COUNT);
         self.volume = scaled.round() as i16;
-        println!("vol is now {}/{}", self.volume, VOL_STEP_COUNT,);
+        log::info!("vol is now {}/{}", self.volume, VOL_STEP_COUNT);
         Ok(())
     }
 
