@@ -14,7 +14,7 @@ pub(crate) fn configure(
     pass: &str,
     nvs: EspNvsPartition<NvsDefault>,
     modem: &mut Modem,
-) -> Result<(), EspError> {
+) -> Result<[u8; 6], EspError> {
     // Configure Wifi
     let sysloop = EspSystemEventLoop::take()?;
 
@@ -35,8 +35,8 @@ pub(crate) fn configure(
     wifi.wait_netif_up()?;
 
     let ip_info = wifi.wifi().sta_netif().get_ip_info()?;
+    let mac = wifi.wifi().ap_netif().get_mac()?;
     log::info!("IP config: {:?}", ip_info);
-    //Ok(wifi)
     std::mem::forget(wifi);
-    Ok(())
+    Ok(mac)
 }

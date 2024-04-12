@@ -123,12 +123,16 @@ fn main() -> anyhow::Result<()> {
     let mut player_builder = I2sPlayerBuilder::new(i2s, dout, bclk, ws);
 
     let nvsp = EspDefaultNvsPartition::take().unwrap();
-    wifi::configure(SSID, PASS, nvsp, &mut peripherals.modem).expect("Could not configure wifi");
+    let mac = wifi::configure(SSID, PASS, nvsp, &mut peripherals.modem)
+        .expect("Could not configure wifi");
 
     let _sntp = sntp::EspSntp::new_default()?;
     log::info!("SNTP initialized");
 
-    let mac = "99:22:33:44:55:66";
+    let mac = format!(
+        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    );
     let name = "esp32";
 
     let dec: Arc<Mutex<Option<Decoder>>> = Arc::new(Mutex::new(None));
@@ -143,7 +147,7 @@ fn main() -> anyhow::Result<()> {
         // Validated experimentally -- with a queue depth of 4, "once in a while", a packet
         // would only be put onto the queue _after_ it's deadline had passed
         let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, TimeVal, Vec<u8>)>(24);
-        let client = Client::new(mac.into(), name.into());
+        let client = Client::new(mac.clone(), name.into());
         // TODO: discover stream
         let client = client.connect("192.168.2.131:1704")?;
         let time_base_c = client.time_base();
@@ -199,13 +203,13 @@ fn connection_main<
                 _ = decoder.lock().unwrap().insert(Decoder::new(&ch)?);
                 let mut _a = player.lock().unwrap();
                 let mut _p = _a.insert(pb.init(&ch).unwrap());
-                // right now we can't re-init the player; this `unwrap()` forces the ESP 32 to reboot
+                // right now we can't re-init the player; this `unwrap()` forces the ESP32 to reboot
                 _p.set_volume(start_vol)?;
                 _p.play()?;
             }
             Message::WireChunk(wc, audible_at) => {
                 // This will sometimes block on send()
-                // to to minimize memory usage (number of buffers in mem).
+                // to minimize memory usage (number of buffers in mem).
                 // Effectively using the network as a buffer
                 if in_sync {
                     let remaining_at_queue = audible_at - time_base_c.elapsed().into();
