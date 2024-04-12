@@ -2,7 +2,7 @@
 
 Supported codecs:
 - PCM
-- Flac
+- Flac (popping/craclking though)
 - OPUS (builds, but crashes instantly)
 
 Supported backends:
@@ -33,10 +33,16 @@ Basic heap analysis:
 
 * On startup, heap low water mark 273KiB
 * After setup, heap low water mark 188KiB
-* With 150ms snapcast buffer: heap low water mark: 167KiB
-* With 500ms snapcast buffer: heap low water mark: 98KiB
-* With 750ms snapcast buffer: heap low water mark: 51KiB
-	- Got a random OOM though?
+
+Free heap space:
+
+|Buffer Duration|PCM    |FLAC   |OPUS   |
+|---------------|-------|-------|-------|
+|150ms          |167KiB |173KiB |?      |
+|500ms          |98KiB  |117KiB |?      |
+|750ms          |51KiB\*| 97KiB |?      |
+
+\* Got a random OOM a few times
 
 ## Known issues
 
@@ -49,4 +55,5 @@ Basic heap analysis:
 ```
 chunk_ms = 30
 buffer = 500
+codec = pcm
 ```
