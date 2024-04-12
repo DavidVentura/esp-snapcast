@@ -20,8 +20,9 @@ On stereo at 48KHz:
 
 - PCM requires ~1.6Mbit/s
 - Flac requires ~1Mbit/s
+- Opus requires ~250Kbit/s
 
-Both of which seem perfectly fine on the ESP32.
+All of which seem perfectly fine on the ESP32.
 
 ## Hardware
 
@@ -38,7 +39,7 @@ Free heap space:
 
 |Buffer Duration|PCM    |FLAC   |OPUS   |
 |---------------|-------|-------|-------|
-|150ms          |167KiB |173KiB |?      |
+|150ms          |167KiB |173KiB |146KiB |
 |500ms          |98KiB  |117KiB |?      |
 |750ms          |51KiB\*| 97KiB |?      |
 
