@@ -5,17 +5,15 @@ use snapcast_client::proto::TimeVal;
 
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp_idf_svc::sntp;
+use esp_idf_svc::sys::esp_get_free_heap_size;
 
 use std::sync::{mpsc, mpsc::SyncSender, Arc, Mutex};
 use std::time;
 
 mod player;
 mod wifi;
-use player::I2sPlayer;
-
-use esp_idf_svc::sys::esp_get_free_heap_size;
-
-use crate::player::I2sPlayerBuilder;
+use player::{I2sPlayer, I2sPlayerBuilder};
 
 const SSID: &str = env!("SSID");
 const PASS: &str = env!("PASS");
@@ -27,9 +25,6 @@ fn handle_samples<P: Player>(
     player: Arc<Mutex<Option<P>>>,
     dec: Arc<Mutex<Option<Decoder>>>,
 ) {
-    /*
-     * I (56195481) esp_snapcast: rem TimeVal { sec: -2, usec: 947379 } too far away! hard cutting - at queue time was TimeVal { sec: 2, usec: 52355 }
-     */
     let mut player_lat_ms: u16 = 1;
     let mut samples_per_ms: u16 = 1; // irrelevant, will be overwritten
 
@@ -129,6 +124,9 @@ fn main() -> anyhow::Result<()> {
 
     let nvsp = EspDefaultNvsPartition::take().unwrap();
     wifi::configure(SSID, PASS, nvsp, &mut peripherals.modem).expect("Could not configure wifi");
+
+    let _sntp = sntp::EspSntp::new_default()?;
+    log::info!("SNTP initialized");
 
     let mac = "99:22:33:44:55:66";
     let name = "esp32";

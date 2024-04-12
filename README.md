@@ -48,7 +48,8 @@ Free heap space:
 
 - There still _may be_ scenarios which cause a missed frame, and there's no stretching/cutting, so it's a jarring transition.
 	- Have not seen this since increasing the buffer sizes
-- After ~a day of not playing, the time bases get out of sync and no audio will be played anymore; debugging is a pain
+- After ~a day of not playing, the time bases get out of sync (by ~2s) and no audio will be played anymore; debugging is a pain
+	- This is likely due to the ESP32's inaccurate clock -
 
 ## Recommended snapserver settings
 
