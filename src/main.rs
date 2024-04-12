@@ -191,6 +191,7 @@ fn connection_main<
     log::info!("[setup done] heap low water mark: {free}");
 
     let time_base_c = client.time_base();
+    let mut start_vol = 20;
     loop {
         let in_sync = client.synchronized();
         let msg = client.tick()?;
@@ -199,8 +200,10 @@ fn connection_main<
                 log::info!("Initializing player with: {ch:?}");
                 _ = decoder.lock().unwrap().insert(Decoder::new(&ch)?);
                 let mut _a = player.lock().unwrap();
-                let mut _p = _a.insert(pb.init(&ch)?);
-                _p.play().unwrap();
+                let mut _p = _a.insert(pb.init(&ch).unwrap());
+                // right now we can't re-init the player; this `unwrap()` forces the ESP 32 to reboot
+                _p.set_volume(start_vol)?;
+                _p.play()?;
             }
             Message::WireChunk(wc, audible_at) => {
                 // This will sometimes block on send()
@@ -214,10 +217,11 @@ fn connection_main<
 
             Message::PlaybackVolume(v) => {
                 let mut p = player.lock().unwrap();
+                start_vol = v;
                 if let Some(p) = p.as_mut() {
-                    p.set_volume(v).unwrap();
+                    p.set_volume(v)?;
                 } else {
-                    log::error!("Tried to set volume but player is not initialized yet");
+                    log::info!("Delaying volume config");
                 }
             }
             Message::Nothing => (),
