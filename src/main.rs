@@ -27,6 +27,9 @@ fn handle_samples<P: Player>(
     player: Arc<Mutex<Option<P>>>,
     dec: Arc<Mutex<Option<Decoder>>>,
 ) {
+    /*
+     * I (56195481) esp_snapcast: rem TimeVal { sec: -2, usec: 947379 } too far away! hard cutting - at queue time was TimeVal { sec: 2, usec: 52355 }
+     */
     let mut player_lat_ms: u16 = 1;
     let mut samples_per_ms: u16 = 1; // irrelevant, will be overwritten
 
@@ -52,8 +55,8 @@ fn handle_samples<P: Player>(
 
             if remaining.sec != 0 {
                 log::info!(
-                    "rem {remaining:?} too far away! hard cutting - at queue time was {:?}",
-                    rem_at_queue_time.abs()
+                    "rem {remaining:?} too far away! hard cutting - at queue time was {:?} - client base {:?}",
+                    rem_at_queue_time.abs(), time_base_c.elapsed(),
                 );
                 valid = false;
                 break;
