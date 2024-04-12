@@ -35,11 +35,14 @@ Basic heap analysis:
 * After setup, heap low water mark 188KiB
 * With 150ms snapcast buffer: heap low water mark: 167KiB
 * With 500ms snapcast buffer: heap low water mark: 98KiB
-* With 750ms snapcast buffer: heap low water mark: 51KiB - Random OOM?
+* With 750ms snapcast buffer: heap low water mark: 51KiB
+	- Got a random OOM though?
 
 ## Known issues
 
-- There still are some scenarios which cause a missed frame, and there's no stretching/cutting, so it's a jarring transition.
+- There still _may be_ scenarios which cause a missed frame, and there's no stretching/cutting, so it's a jarring transition.
+	- Have not seen this since increasing the buffer sizes
+- After ~a day of not playing, the time bases get out of sync and no audio will be played anymore; debugging is a pain
 
 ## Recommended snapserver settings
 
