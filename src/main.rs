@@ -15,6 +15,8 @@ use player::I2sPlayer;
 
 use esp_idf_svc::sys::esp_get_free_heap_size;
 
+use crate::player::I2sPlayerBuilder;
+
 const SSID: &str = env!("SSID");
 const PASS: &str = env!("PASS");
 
@@ -120,7 +122,7 @@ fn main() -> anyhow::Result<()> {
     let dout = peripherals.pins.gpio19;
     let bclk = peripherals.pins.gpio21;
     let ws = peripherals.pins.gpio18;
-    let player = I2sPlayer::new(i2s, dout, bclk, ws);
+    let mut player_builder = I2sPlayerBuilder::new(i2s, dout, bclk, ws);
 
     let nvsp = EspDefaultNvsPartition::take().unwrap();
     wifi::configure(SSID, PASS, nvsp, &mut peripherals.modem).expect("Could not configure wifi");
@@ -135,7 +137,7 @@ fn main() -> anyhow::Result<()> {
     // >= 4700 for flac
     let mut dec_samples_buf = vec![0; 4700];
 
-    let player: Arc<Mutex<Option<I2sPlayer>>> = Arc::new(Mutex::new(Some(player)));
+    let player: Arc<Mutex<Option<I2sPlayer>>> = Arc::new(Mutex::new(None));
     loop {
         // Validated experimentally -- with a queue depth of 4, "once in a while", a packet
         // would only be put onto the queue _after_ it's deadline had passed
@@ -155,7 +157,7 @@ fn main() -> anyhow::Result<()> {
         std::thread::scope(|s| {
             s.spawn(move || handle_samples(decref, sample_rx, time_base_c, player_2, dec2));
 
-            let r = connection_main(client, player_3, sample_tx, dec3);
+            let r = connection_main(client, &mut player_builder, player_3, sample_tx, dec3);
             log::error!("Connection dropped: {r:?}");
             // sample_tx is dropped here - sample_rx dies -> thread expires -> scope finishes
         });
@@ -164,8 +166,18 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn connection_main(
+use esp_idf_hal::gpio::{InputPin, OutputPin};
+use esp_idf_hal::peripheral::Peripheral;
+fn connection_main<
+    OP: OutputPin + InputPin,
+    OQ: OutputPin + InputPin,
+    OR: OutputPin + InputPin,
+    P: Peripheral<P = OP> + 'static,
+    Q: Peripheral<P = OQ> + 'static,
+    R: Peripheral<P = OR> + 'static,
+>(
     mut client: ConnectedClient,
+    pb: &mut I2sPlayerBuilder<OP, OQ, OR, P, Q, R>,
     player: Arc<Mutex<Option<I2sPlayer>>>,
     sample_tx: SyncSender<(TimeVal, TimeVal, Vec<u8>)>,
     decoder: Arc<Mutex<Option<Decoder>>>,
@@ -184,11 +196,8 @@ fn connection_main(
                 log::info!("Initializing player with: {ch:?}");
                 _ = decoder.lock().unwrap().insert(Decoder::new(&ch)?);
                 let mut _a = player.lock().unwrap();
-                let _p = _a.as_mut().unwrap();
-                {
-                    _p.init(&ch);
-                    _p.play().unwrap();
-                }
+                let mut _p = _a.insert(pb.init(&ch)?);
+                _p.play().unwrap();
             }
             Message::WireChunk(wc, audible_at) => {
                 // This will sometimes block on send()
@@ -201,13 +210,12 @@ fn connection_main(
             }
 
             Message::PlaybackVolume(v) => {
-                player
-                    .lock()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .set_volume(v)
-                    .unwrap();
+                let mut p = player.lock().unwrap();
+                if let Some(p) = p.as_mut() {
+                    p.set_volume(v).unwrap();
+                } else {
+                    log::error!("Tried to set volume but player is not initialized yet");
+                }
             }
             Message::Nothing => (),
         }
