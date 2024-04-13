@@ -11,6 +11,8 @@ use esp_idf_hal::peripheral::Peripheral;
 use snapcast_client::playback::Player;
 use snapcast_client::proto::CodecHeader;
 
+use crate::util;
+
 pub struct I2sPlayerBuilder<
     OP: OutputPin + InputPin,
     OQ: OutputPin + InputPin,
@@ -109,7 +111,15 @@ impl Player for I2sPlayer {
         // SAFETY: it's always safe to align i16 to u8
         let (_, converted, _) = unsafe { buf[0..buf.len()].align_to::<u8>() };
 
-        self.d.write_all(converted, Self::BLOCK_TIME.into())?;
+        util::measure_exec(
+            "write to i2s player",
+            || {
+                self.d
+                    .write_all(converted, Self::BLOCK_TIME.into())
+                    .unwrap();
+            },
+            std::time::Duration::from_millis(1),
+        );
         Ok(())
     }
 

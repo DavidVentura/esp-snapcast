@@ -12,7 +12,9 @@ use std::sync::{mpsc, mpsc::SyncSender, Arc, Mutex};
 use std::time;
 
 mod player;
+mod util;
 mod wifi;
+
 use player::{I2sPlayer, I2sPlayerBuilder};
 
 const SSID: &str = env!("SSID");
@@ -213,7 +215,15 @@ fn connection_main<
                 // Effectively using the network as a buffer
                 if in_sync {
                     let remaining_at_queue = audible_at - time_base_c.elapsed().into();
-                    sample_tx.send((audible_at, remaining_at_queue, wc.payload.to_vec()))?;
+                    util::measure_exec(
+                        "send buf to queue",
+                        || {
+                            sample_tx
+                                .send((audible_at, remaining_at_queue, wc.payload.to_vec()))
+                                .unwrap();
+                        },
+                        std::time::Duration::from_millis(1),
+                    );
                 }
             }
 
