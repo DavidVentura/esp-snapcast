@@ -5,11 +5,10 @@ use snapcast_client::proto::TimeVal;
 
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_svc::sntp;
 use esp_idf_svc::sys::esp_get_free_heap_size;
 
-use std::sync::{mpsc, mpsc::SyncSender, Arc, Mutex};
-use std::time;
+use std::sync::{mpsc, mpsc::SyncSender, Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 mod player;
 mod util;
@@ -104,6 +103,35 @@ fn handle_samples<P: Player>(
     }
 }
 
+fn start_and_sync_sntp() -> anyhow::Result<esp_idf_svc::sntp::EspSntp<'static>> {
+    // configure sync to run every 5 min, as we see ~100ms drift per hour.
+    unsafe { esp_idf_sys::sntp_set_sync_interval(5 * 60 * 1000) };
+
+    let pair = Arc::new((Mutex::new(false), Condvar::new()));
+    let pair2 = pair.clone();
+    let sntp = unsafe {
+        let mut conf = esp_idf_svc::sntp::SntpConf::default();
+        conf.sync_mode = esp_idf_svc::sntp::SyncMode::Smooth;
+        esp_idf_svc::sntp::EspSntp::new_nonstatic_with_callback(&conf, move |d| {
+            log::info!("Time sync {:?}", d);
+            let (lock, cvar) = &*pair2;
+            let mut started = lock.lock().unwrap();
+            *started = true;
+            // We notify the condvar that the value has changed.
+            cvar.notify_one();
+        })?
+    };
+
+    // Wait for the thread to start up.
+    let (lock, cvar) = &*pair;
+    let mut started = lock.lock().unwrap();
+    while !*started {
+        started = cvar.wait(started).unwrap();
+    }
+
+    Ok(sntp)
+}
+
 fn main() -> anyhow::Result<()> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
@@ -125,11 +153,12 @@ fn main() -> anyhow::Result<()> {
     let mut player_builder = I2sPlayerBuilder::new(i2s, dout, bclk, ws);
 
     let nvsp = EspDefaultNvsPartition::take().unwrap();
+
     let mac = wifi::configure(SSID, PASS, nvsp, &mut peripherals.modem)
         .expect("Could not configure wifi");
 
-    let _sntp = sntp::EspSntp::new_default()?;
-    log::info!("SNTP initialized");
+    log::info!("Syncing time via SNTP");
+    let _sntp = start_and_sync_sntp()?;
 
     let mac = format!(
         "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
