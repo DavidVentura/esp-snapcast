@@ -2,7 +2,7 @@
 
 Supported codecs:
 - PCM
-- Flac (popping/craclking though)
+- Flac (popping/craclking on some boots??)
 - OPUS (builds, but crashes instantly)
 
 Supported backends:
@@ -40,8 +40,8 @@ Free heap space:
 |Buffer Duration|PCM    |FLAC   |OPUS   |
 |---------------|-------|-------|-------|
 |150ms          |167KiB |173KiB |146KiB |
-|500ms          |98KiB  |117KiB |?      |
-|750ms          |51KiB\*| 97KiB |?      |
+|500ms          |93KiB  |117KiB |?      |
+|750ms          |31KiB\*| 97KiB |?      |
 
 \* Got a random OOM a few times
 
@@ -49,8 +49,8 @@ Free heap space:
 
 - There still _may be_ scenarios which cause a missed frame, and there's no stretching/cutting, so it's a jarring transition.
 	- Have not seen this since increasing the buffer sizes
-- After ~a day of not playing, the time bases get out of sync (by ~2s) and no audio will be played anymore; debugging is a pain
-	- This is likely due to the ESP32's inaccurate clock -
+- The ESP32's clock is very inaccurate -- I've measured ~100ms drift per hour with the standard configuration
+	- The SNTP client _should_ correct the drift accumulation
 
 ## Recommended snapserver settings
 

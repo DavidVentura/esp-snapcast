@@ -9,3 +9,6 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # Workaround for https://github.com/espressif/esp-idf/issues/7631
 #CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
 #CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=n
+CONFIG_RTC_CLK_SRC_INT_8MD256=y
+CONFIG_RTC_CLK_SRC_INT_RC=n
+# _may_ make the clock more accure
