@@ -22,50 +22,47 @@ const PASS: &str = env!("PASS");
 fn handle_samples<P: Player>(
     dec_sample_buf: &mut [i16],
     sample_rx: mpsc::Receiver<(TimeVal, TimeVal, Vec<u8>)>,
-    time_base_c: time::Instant,
+    time_base_c: Instant,
     player: Arc<Mutex<Option<P>>>,
     dec: Arc<Mutex<Option<Decoder>>>,
 ) {
-    let mut player_lat_ms: u16 = 1;
     let mut samples_per_ms: u16 = 1; // irrelevant, will be overwritten
 
     let mut free_heap = unsafe { esp_get_free_heap_size() };
 
     while let Ok((client_audible_ts, rem_at_queue_time, samples)) = sample_rx.recv() {
         let mut valid = true;
-        let mut remaining: TimeVal;
-
         let mut skip_samples = 0;
 
         let free = unsafe { esp_get_free_heap_size() };
         if free < free_heap {
-            log::info!("heap low water mark: {free}");
+            if free_heap - free > 512 {
+                // only log somewhat large changes
+                log::info!("heap low water mark: {free}");
+            }
             free_heap = free;
         }
-        loop {
-            remaining = client_audible_ts - time_base_c.elapsed().into();
-            if remaining.sec == -1 && remaining.usec > 0 {
-                remaining.sec = 0;
-                remaining.usec -= 1_000_000;
-            }
 
-            if remaining.sec != 0 {
-                log::info!(
-                    "rem {remaining:?} too far away! hard cutting - at queue time was {:?} - client base {:?}",
-                    rem_at_queue_time.abs(), time_base_c.elapsed(),
-                );
-                valid = false;
-                break;
-            }
+        let mut remaining = client_audible_ts - time_base_c.elapsed().into();
 
-            // consider 0.5ms reasonable to just play
-            if remaining.usec > -500 {
+        if remaining.sec == -1 && remaining.usec > 0 {
+            remaining.sec = 0;
+            remaining.usec -= 1_000_000;
+        }
+
+        if remaining.sec != 0 {
+            log::info!(
+                "rem {remaining:?} too far away! hard cutting - at queue time was {:?}",
+                rem_at_queue_time.abs(), //time_base_c.elapsed(),
+            );
+            valid = false;
+        } else {
+            if remaining.usec > 0 {
                 skip_samples = 0;
-                if (remaining.usec / 1000) as u16 <= player_lat_ms {
-                    break;
-                } else {
-                    std::thread::sleep(time::Duration::from_micros(499));
-                }
+                let tosleep = Duration::from_secs(remaining.sec.abs() as u64)
+                    + Duration::from_micros(remaining.usec.abs() as u64);
+                // can't substract with overflow
+                std::thread::sleep(tosleep - std::cmp::min(tosleep, Duration::from_micros(1500)));
             } else {
                 let ms_to_skip = (remaining.usec / 1000).unsigned_abs() as u16;
                 skip_samples = ms_to_skip * samples_per_ms;
@@ -73,7 +70,6 @@ fn handle_samples<P: Player>(
                     "skipping {skip_samples} samples = {ms_to_skip}ms - at queue time was {:?}",
                     rem_at_queue_time.abs()
                 );
-                break;
             }
         }
 
@@ -88,8 +84,6 @@ fn handle_samples<P: Player>(
         let Some(ref mut p) = *player.lock().unwrap() else {
             continue;
         };
-        // Backends with 0ms of buffer (file, tcp) otherwise behave erratically
-        player_lat_ms = std::cmp::max(1, p.latency_ms().unwrap());
         if samples_per_ms == 1 {
             samples_per_ms = p.sample_rate() / 1000;
         }
@@ -177,11 +171,10 @@ fn main() -> anyhow::Result<()> {
     loop {
         // Validated experimentally -- with a queue depth of 4, "once in a while", a packet
         // would only be put onto the queue _after_ it's deadline had passed
-        let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, TimeVal, Vec<u8>)>(24);
+        let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, TimeVal, Vec<u8>)>(32);
         let client = Client::new(mac.clone(), name.into());
         // TODO: discover stream
         let client = client.connect("192.168.2.131:1704")?;
-        let time_base_c = client.time_base();
 
         let player_2 = player.clone();
         let player_3 = player.clone();
@@ -191,7 +184,8 @@ fn main() -> anyhow::Result<()> {
         let decref = &mut dec_samples_buf;
 
         std::thread::scope(|s| {
-            s.spawn(move || handle_samples(decref, sample_rx, time_base_c, player_2, dec2));
+            let tb = client.time_base();
+            s.spawn(move || handle_samples(decref, sample_rx, tb, player_2, dec2));
 
             let r = connection_main(client, &mut player_builder, player_3, sample_tx, dec3);
             log::error!("Connection dropped: {r:?}");
@@ -223,9 +217,9 @@ fn connection_main<
     let free = unsafe { esp_get_free_heap_size() };
     log::info!("[setup done] heap low water mark: {free}");
 
-    let time_base_c = client.time_base();
     let mut start_vol = 20;
     loop {
+        let time_base_c = client.time_base();
         let in_sync = client.synchronized();
         let msg = client.tick()?;
         match msg {
