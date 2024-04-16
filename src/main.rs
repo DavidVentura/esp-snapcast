@@ -228,7 +228,9 @@ fn connection_main<
                 _ = decoder.lock().unwrap().insert(Decoder::new(&ch)?);
                 let mut _a = player.lock().unwrap();
                 let mut _p = _a.insert(pb.init(&ch).unwrap());
-                // right now we can't re-init the player; this `unwrap()` forces the ESP32 to reboot
+                // right now we can't re-init the player due to the I2S peripheral
+                // requiring ownership of the GPIOs
+                // this `unwrap()` forces the ESP32 to reboot
                 _p.set_volume(start_vol)?;
                 _p.play()?;
             }
@@ -245,18 +247,17 @@ fn connection_main<
                                 .send((audible_at, remaining_at_queue, wc.payload.to_vec()))
                                 .unwrap();
                         },
-                        std::time::Duration::from_millis(1),
+                        Duration::from_millis(1),
                     );
                 }
             }
 
             Message::PlaybackVolume(v) => {
                 let mut p = player.lock().unwrap();
+                // Delay configuration until player is instantiated
                 start_vol = v;
                 if let Some(p) = p.as_mut() {
                     p.set_volume(v)?;
-                } else {
-                    log::info!("Delaying volume config");
                 }
             }
             Message::Nothing => (),
