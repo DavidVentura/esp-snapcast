@@ -51,7 +51,7 @@ impl<
         let i2s_config = config::StdConfig::new(
             config::Config::default()
                 .auto_clear(true)
-                .dma_buffer_count(6)
+                .dma_buffer_count(8)
                 .frames_per_buffer(511),
             config::StdClkConfig::from_sample_rate_hz(ch.metadata.rate() as u32),
             config::StdSlotConfig::philips_slot_default(
