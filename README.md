@@ -28,6 +28,8 @@ All of which seem perfectly fine on the ESP32.
 
 I use an [UDA1334A](https://nl.aliexpress.com/item/1005006140641304.html) module with an [ESP32-WROOM-32](https://nl.aliexpress.com/item/1005006500507950.html) (a 320KiB RAM model).
 
+A pull-down resistor on WSEL makes for quiet reboots; without this, there's a lot of garbled noise until playback starts.
+
 ### Memory usage
 
 Basic heap analysis:
