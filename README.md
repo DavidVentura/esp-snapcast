@@ -2,7 +2,7 @@
 
 Supported codecs:
 - PCM
-- Flac (popping/craclking on some boots??)
+- Flac
 - OPUS (builds, but crashes instantly)
 
 Supported backends:
@@ -45,7 +45,7 @@ Free heap space:
 |500ms          |93KiB  |117KiB |?      |
 |750ms          |31KiB\*| 97KiB |?      |
 
-\* Got a random OOM a few times
+\* Got a random OOM a few times, investigating
 
 ## Known issues
 
@@ -58,6 +58,6 @@ Free heap space:
 
 ```
 chunk_ms = 30
-buffer = 500
-codec = pcm
+buffer = 690
+codec = flac
 ```
