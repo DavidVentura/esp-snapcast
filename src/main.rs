@@ -252,12 +252,13 @@ fn connection_main<
                 }
             }
 
-            Message::PlaybackVolume(v) => {
+            Message::ServerSettings(s) => {
                 let mut p = player.lock().unwrap();
+                log::info!("Server settings {s:?}");
                 // Delay configuration until player is instantiated
-                start_vol = v;
+                start_vol = s.volume;
                 if let Some(p) = p.as_mut() {
-                    p.set_volume(v)?;
+                    p.set_volume(s.volume)?;
                 }
             }
             Message::Nothing => (),
