@@ -46,11 +46,13 @@ fn handle_samples<P: Player>(
         let mut valid = true;
         let mut skip_samples = 0;
 
+        let low_water = unsafe { esp_get_minimum_free_heap_size() };
         let free = unsafe { esp_get_free_heap_size() };
         if free < free_heap {
             if free_heap - free > 512 {
                 // only log somewhat large changes
-                log::info!("heap low water mark: {free}");
+                let block = unsafe { heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT) };
+                log::info!("heap low water mark: {free} - {low_water} - {block}");
             }
             free_heap = free;
         }
