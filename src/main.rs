@@ -204,12 +204,14 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio21, ws: Gpio18) -> a
 
     let player: Arc<Mutex<Option<I2sPlayer>>> = Arc::new(Mutex::new(None));
     loop {
-        // Validated experimentally -- with a queue depth of 4, "once in a while", a packet
-        // would only be put onto the queue _after_ it's deadline had passed
+        // Validated experimentally -- compressed samples are up to 9KiB ; average is 4~5KiB
         let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, TimeVal, Vec<u8>)>(32);
         let client = Client::new(mac.clone(), name.into());
         // TODO: discover stream
-        let client = client.connect("192.168.2.131:1704")?;
+        //let client = client.connect("192.168.2.131:1704")?;
+        let client = client
+            .connect("192.168.2.183:1704")
+            .context("Could not connect to SnapCast server")?;
 
         let player_2 = player.clone();
         let player_3 = player.clone();
@@ -278,6 +280,8 @@ fn connection_main<
                     util::measure_exec(
                         "send buf to queue",
                         || {
+                            // the freshest packet is in memory twice - as TCP data
+                            // and cloned into the queue
                             sample_tx
                                 .send((audible_at, remaining_at_queue, wc.payload.to_vec()))
                                 .unwrap();
