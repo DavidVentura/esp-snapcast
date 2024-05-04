@@ -7,6 +7,8 @@ Supported codecs:
 
 ## Building
 
+_Note that you can download the pre-built firmware [from CI](https://github.com/DavidVentura/esp-snapcast/actions)._
+
 ### Requirements
 
 * Install [esp-rust](https://docs.esp-rs.org/book/installation/rust.html)
