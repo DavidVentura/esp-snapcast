@@ -26,7 +26,8 @@ embassy = ["esp-idf-svc/embassy-sync", "esp-idf-svc/critical-section", "esp-idf-
 [dependencies]
 log = { version = "0.4", default-features = false }
 esp-idf-svc = { version = "0.48", default-features = false }
-snapcast-client = { version = "0.1.0", path = "../snapcast-client", features = ["flac"] } # "opus"
+snapcast-client = { git = "https://github.com/DavidVentura/snapcast-client", branch = "master", features = ["flac"] } # "opus"
+# snapcast-client = { version = "0.1.0", path = "../snapcast-client", features = ["flac"] } # "opus"
 anyhow = "1.0.81"
 esp-idf-hal = "0.43.1"
 esp-idf-sys = "0.34.1"
