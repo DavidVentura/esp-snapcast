@@ -1,11 +1,15 @@
+use anyhow::Context;
 use snapcast_client::client::{Client, ConnectedClient, Message};
 use snapcast_client::decoder::{Decode, Decoder};
 use snapcast_client::playback::Player;
 use snapcast_client::proto::TimeVal;
 
+use esp_idf_hal::gpio::{Gpio18, Gpio19, Gpio21};
+use esp_idf_hal::i2s::I2S0;
+use esp_idf_hal::modem::Modem;
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_svc::sys::esp_get_free_heap_size;
+use esp_idf_svc::sys::*;
 
 use std::sync::{mpsc, mpsc::SyncSender, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -134,30 +138,47 @@ fn start_and_sync_sntp() -> anyhow::Result<esp_idf_svc::sntp::EspSntp<'static>> 
     Ok(sntp)
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> ! {
     // It is necessary to call this function once. Otherwise some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
     esp_idf_svc::sys::link_patches();
 
     // Bind the log crate to the ESP Logging facilities
     esp_idf_svc::log::EspLogger::initialize_default();
-    esp_idf_svc::log::EspLogger.set_target_level("target", log::LevelFilter::Info)?;
+    esp_idf_svc::log::EspLogger
+        .set_target_level("target", log::LevelFilter::Info)
+        .expect("Unable to set logger");
 
     let free = unsafe { esp_get_free_heap_size() };
     log::info!("[startup] heap low water mark: {free}");
 
     let mut peripherals = Peripherals::take().unwrap();
 
+    let mac = setup(&mut peripherals.modem).unwrap();
     let i2s = peripherals.i2s0;
     let dout = peripherals.pins.gpio19;
     let bclk = peripherals.pins.gpio21;
     let ws = peripherals.pins.gpio18;
-    let mut player_builder = I2sPlayerBuilder::new(i2s, dout, bclk, ws);
+
+    let res = app_main(mac, i2s, dout, bclk, ws);
+    log::error!("Main returned with {res:?}; will reboot now");
+    unsafe { esp_restart() };
+}
+
+fn setup(modem: &mut Modem) -> anyhow::Result<String> {
+    let ssid = std::ffi::CStr::from_bytes_until_nul(&SSID)
+        .expect("Invalid build SSID")
+        .to_str()
+        .expect("SSID is not UTF-8");
+    let pass = std::ffi::CStr::from_bytes_until_nul(&PASS)
+        .expect("Invalid build PASS")
+        .to_str()
+        .expect("PASS is not UTF-8");
+
+    log::info!("Connecting to SSID '{ssid}'");
 
     let nvsp = EspDefaultNvsPartition::take().unwrap();
-
-    let mac = wifi::configure(SSID, PASS, nvsp, &mut peripherals.modem)
-        .expect("Could not configure wifi");
+    let mac = wifi::configure(ssid, pass, nvsp, modem).expect("Could not configure wifi");
 
     log::info!("Syncing time via SNTP");
     let _sntp = start_and_sync_sntp()?;
@@ -166,6 +187,12 @@ fn main() -> anyhow::Result<()> {
         "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     );
+    Ok(mac)
+}
+
+fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio21, ws: Gpio18) -> anyhow::Result<()> {
+    let mut player_builder = I2sPlayerBuilder::new(i2s, dout, bclk, ws);
+
     let name = "esp32";
 
     let dec: Arc<Mutex<Option<Decoder>>> = Arc::new(Mutex::new(None));
