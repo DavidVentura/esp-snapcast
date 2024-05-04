@@ -1,0 +1,51 @@
+# Edited from Espressif's CI: https://github.com/esp-rs/esp-idf-hal/blob/master/.github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  compile:
+    name: Compile
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - xtensa-esp32-espidf
+        idf-version:
+          - release/v5.1
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Rust for Xtensa
+        if: matrix.target != 'riscv32imc-esp-espidf'
+        uses: esp-rs/xtensa-toolchain@v1.5.1
+        with:
+          default: true
+          
+      - name: Build | Fmt Check
+        run: cargo fmt -- --check
+
+      - name: Build | Clippy
+        env:
+          ESP_IDF_VERSION: ${{ matrix.idf-version }}
+        run: cargo clippy --no-deps --target ${{ matrix.target }} -- -Dwarnings
+
+      - name: Build | Compile, all
+        env:
+          ESP_IDF_VERSION: ${{ matrix.idf-version }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware.elf
+          path: target/xtensa-esp32-espidf/release/esp-snapcast
