@@ -1,7 +1,6 @@
 .PHONY: build flash flashm monitor only_build
 ELF = target/xtensa-esp32-espidf/release/esp-snapcast
-build:
-	cargo build --release
+build: only_build
 	python3 replacer.py ${ELF}
 only_build:
 	cargo build --release

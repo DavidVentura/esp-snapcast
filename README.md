@@ -7,12 +7,11 @@ Supported codecs:
 
 ## Building
 
-You need to provide the `SSID` and `PASS` environment variables, for your wifi settings:
+### Requirements
 
-```bash
-export SSID=<your wifi name>
-export PASS=<your wifi password>
-```
+* Install [esp-rust](https://docs.esp-rs.org/book/installation/rust.html)
+* `cargo install ldproxy espflash`
+
 
 If you want to build the `opus` backend, you also need:
 ```bash
@@ -20,11 +19,22 @@ export CC=xtensa-esp32-elf-gcc
 export CXX=xtensa-esp32-elf-g++
 ```
 
-To build the project, you can run `make build`
+To build the project, run `make only_build`
 
 Note that mDNS (automatic discovery) is not yet implemented, so you must set the IP for the snapcast server on `src/main.rs`.
 
 ### Flashing
+
+Requires [espflash](https://github.com/esp-rs/espflash/tree/main/espflash).
+
+You need to provide the `SSID` and `PASS` environment variables, for your wifi settings:
+
+```bash
+export SSID=<your wifi name>
+export PASS=<your wifi password>
+```
+
+These will be embedded into the firmware file with the `replacer.py` script.
 
 To flash the project into an ESP32 you can run `make flashm`
 
@@ -86,7 +96,8 @@ Free heap space:
 
 ## Known issues
 
-- There still _may be_ scenarios which cause a missed frame, and there's no stretching/cutting, so it's a jarring transition.
-	- Have not seen this since increasing the buffer sizes
-- The ESP32's clock is very inaccurate -- I've measured ~100ms drift per hour with the standard configuration
-	- The SNTP client _should_ correct the drift accumulation
+- OPUS does not work 
+
+## TODO
+
+[ ] Host a page with [esp tools](https://esphome.github.io/esp-web-tools/) to provide easy flashing/firmware building
