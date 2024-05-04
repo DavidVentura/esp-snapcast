@@ -72,8 +72,8 @@ fn handle_samples<P: Player>(
             valid = false;
         } else if remaining.usec > 0 {
             skip_samples = 0;
-            let tosleep = Duration::from_secs(remaining.sec.abs() as u64)
-                + Duration::from_micros(remaining.usec.abs() as u64);
+            let tosleep = Duration::from_secs(remaining.sec.unsigned_abs() as u64)
+                + Duration::from_micros(remaining.usec.unsigned_abs() as u64);
             // can't substract with overflow
             std::thread::sleep(tosleep - std::cmp::min(tosleep, Duration::from_micros(1500)));
         } else {
