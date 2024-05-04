@@ -70,21 +70,19 @@ fn handle_samples<P: Player>(
                 rem_at_queue_time.abs(), //time_base_c.elapsed(),
             );
             valid = false;
+        } else if remaining.usec > 0 {
+            skip_samples = 0;
+            let tosleep = Duration::from_secs(remaining.sec.abs() as u64)
+                + Duration::from_micros(remaining.usec.abs() as u64);
+            // can't substract with overflow
+            std::thread::sleep(tosleep - std::cmp::min(tosleep, Duration::from_micros(1500)));
         } else {
-            if remaining.usec > 0 {
-                skip_samples = 0;
-                let tosleep = Duration::from_secs(remaining.sec.abs() as u64)
-                    + Duration::from_micros(remaining.usec.abs() as u64);
-                // can't substract with overflow
-                std::thread::sleep(tosleep - std::cmp::min(tosleep, Duration::from_micros(1500)));
-            } else {
-                let ms_to_skip = (remaining.usec / 1000).unsigned_abs() as u16;
-                skip_samples = ms_to_skip * samples_per_ms;
-                log::info!(
-                    "skipping {skip_samples} samples = {ms_to_skip}ms - at queue time was {:?}",
-                    rem_at_queue_time.abs()
-                );
-            }
+            let ms_to_skip = (remaining.usec / 1000).unsigned_abs() as u16;
+            skip_samples = ms_to_skip * samples_per_ms;
+            log::info!(
+                "skipping {skip_samples} samples = {ms_to_skip}ms - at queue time was {:?}",
+                rem_at_queue_time.abs()
+            );
         }
 
         if !valid {
@@ -118,8 +116,11 @@ fn start_and_sync_sntp() -> anyhow::Result<esp_idf_svc::sntp::EspSntp<'static>> 
     let pair = Arc::new((Mutex::new(false), Condvar::new()));
     let pair2 = pair.clone();
     let sntp = unsafe {
-        let mut conf = esp_idf_svc::sntp::SntpConf::default();
-        conf.sync_mode = esp_idf_svc::sntp::SyncMode::Smooth;
+        let conf = esp_idf_svc::sntp::SntpConf {
+            servers: Default::default(),
+            sync_mode: esp_idf_svc::sntp::SyncMode::Smooth,
+            operating_mode: esp_idf_svc::sntp::OperatingMode::Poll,
+        };
         esp_idf_svc::sntp::EspSntp::new_nonstatic_with_callback(&conf, move |d| {
             log::info!("Time sync {:?}", d);
             let (lock, cvar) = &*pair2;
