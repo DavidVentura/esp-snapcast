@@ -61,7 +61,7 @@ impl<
             config::StdGpioConfig::default(),
         );
 
-        let i2s = self.i2s.take().ok_or(anyhow!("Initialized twice"))?;
+        let i2s = self.i2s.take().ok_or(anyhow!("Initialized I2s twice"))?;
         let bclk = self.bclk.take().ok_or(anyhow!("Initialized twice"))?;
         let dout = self.dout.take().ok_or(anyhow!("Initialized twice"))?;
         let ws = self.ws.take().ok_or(anyhow!("Initialized twice"))?;
@@ -104,8 +104,10 @@ impl Player for I2sPlayer {
     }
 
     fn write(&mut self, buf: &mut [i16]) -> anyhow::Result<()> {
-        for s in buf.iter_mut() {
-            *s = ((*s as i32 * self.volume as i32) / VOL_STEP_COUNT as i32) as i16;
+        if self.volume < VOL_STEP_COUNT {
+            for s in buf.iter_mut() {
+                *s = ((*s as i32 * self.volume as i32) / VOL_STEP_COUNT as i32) as i16;
+            }
         }
 
         // SAFETY: it's always safe to align i16 to u8
