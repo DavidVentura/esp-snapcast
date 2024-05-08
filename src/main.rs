@@ -31,9 +31,14 @@ const PASS: [u8; 64] = [
     0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x00,
 ];
 
+enum Sample {
+    Data(Vec<u8>),
+    WhiteNoise,
+}
+
 fn handle_samples<P: Player>(
     dec_sample_buf: &mut [i16],
-    sample_rx: mpsc::Receiver<(TimeVal, TimeVal, Vec<u8>)>,
+    sample_rx: mpsc::Receiver<(TimeVal, Sample)>,
     time_base_c: Instant,
     player: Arc<Mutex<Option<P>>>,
     dec: Arc<Mutex<Option<Decoder>>>,
@@ -42,7 +47,7 @@ fn handle_samples<P: Player>(
 
     let mut free_heap = unsafe { esp_get_free_heap_size() };
 
-    while let Ok((client_audible_ts, rem_at_queue_time, samples)) = sample_rx.recv() {
+    while let Ok((client_audible_ts, samples)) = sample_rx.recv() {
         let mut valid = true;
         let mut skip_samples = 0;
 
@@ -65,10 +70,7 @@ fn handle_samples<P: Player>(
         }
 
         if remaining.sec != 0 {
-            log::info!(
-                "rem {remaining:?} too far away! hard cutting - at queue time was {:?}",
-                rem_at_queue_time.abs(), //time_base_c.elapsed(),
-            );
+            log::info!("rem {remaining:?} too far away! hard cutting");
             valid = false;
         } else if remaining.usec > 0 {
             skip_samples = 0;
@@ -79,10 +81,7 @@ fn handle_samples<P: Player>(
         } else {
             let ms_to_skip = (remaining.usec / 1000).unsigned_abs() as u16;
             skip_samples = ms_to_skip * samples_per_ms;
-            log::info!(
-                "skipping {skip_samples} samples = {ms_to_skip}ms - at queue time was {:?}",
-                rem_at_queue_time.abs()
-            );
+            log::info!("skipping {skip_samples} samples = {ms_to_skip}ms");
         }
 
         if !valid {
@@ -99,13 +98,35 @@ fn handle_samples<P: Player>(
         if samples_per_ms == 1 {
             samples_per_ms = p.sample_rate() / 1000;
         }
-        let decoded_sample_c = dec.decode_sample(&samples, dec_sample_buf).unwrap();
-        if skip_samples as usize > decoded_sample_c {
-            log::info!("Tried to skip way too much, skipping the whole sample");
-            continue;
-        }
-        let sample = &mut dec_sample_buf[0..decoded_sample_c];
-        p.write(&mut sample[(skip_samples as usize)..]).unwrap();
+
+        match samples {
+            Sample::Data(encoded) => {
+                let decoded_sample_c = dec.decode_sample(&encoded, dec_sample_buf).unwrap();
+                if skip_samples as usize > decoded_sample_c {
+                    log::info!("Tried to skip way too much, skipping the whole sample");
+                    continue;
+                }
+                let sample = &mut dec_sample_buf[0..decoded_sample_c];
+                let decoded = &mut sample[(skip_samples as usize)..];
+                p.write(decoded).unwrap();
+            }
+            Sample::WhiteNoise => {
+                let mut inc = -1;
+                let mut ampl: i16 = 0;
+                // this is a triangle wave, going from -64 to 64
+                // ~4800 entries -> 50ms
+                // can chop amplitude and duration if too noisy
+                for i in 0..dec_sample_buf.len() {
+                    if (i % 128) == 0 {
+                        inc = inc * -1;
+                    }
+                    ampl += inc;
+                    dec_sample_buf[i] = ampl / 4;
+                }
+                log::info!("White noise");
+                p.write(dec_sample_buf).unwrap();
+            }
+        };
     }
 }
 
@@ -208,7 +229,7 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio21, ws: Gpio18) -> a
     let player: Arc<Mutex<Option<I2sPlayer>>> = Arc::new(Mutex::new(None));
     loop {
         // Validated experimentally -- compressed samples are up to 9KiB ; average is 4~5KiB
-        let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, TimeVal, Vec<u8>)>(32);
+        let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Sample)>(36);
         let client = Client::new(mac.clone(), name.into());
         // TODO: discover stream
         //let client = client.connect("192.168.2.131:1704")?;
@@ -249,7 +270,7 @@ fn connection_main<
     mut client: ConnectedClient,
     pb: &mut I2sPlayerBuilder<OP, OQ, OR, P, Q, R>,
     player: Arc<Mutex<Option<I2sPlayer>>>,
-    sample_tx: SyncSender<(TimeVal, TimeVal, Vec<u8>)>,
+    sample_tx: SyncSender<(TimeVal, Sample)>,
     decoder: Arc<Mutex<Option<Decoder>>>,
 ) -> anyhow::Result<()> {
     log::info!("Starting a new connection");
@@ -258,6 +279,7 @@ fn connection_main<
     log::info!("[setup done] heap low water mark: {free}");
 
     let mut start_vol = 20;
+    let mut last_sample = Instant::now();
     loop {
         let time_base_c = client.time_base();
         let in_sync = client.synchronized();
@@ -279,18 +301,18 @@ fn connection_main<
                 // to minimize memory usage (number of buffers in mem).
                 // Effectively using the network as a buffer
                 if in_sync {
-                    let remaining_at_queue = audible_at - time_base_c.elapsed().into();
                     util::measure_exec(
                         "send buf to queue",
                         || {
                             // the freshest packet is in memory twice - as TCP data
                             // and cloned into the queue
                             sample_tx
-                                .send((audible_at, remaining_at_queue, wc.payload.to_vec()))
+                                .send((audible_at, Sample::Data(wc.payload.to_vec())))
                                 .unwrap();
                         },
                         Duration::from_millis(1),
                     );
+                    last_sample = Instant::now();
                 }
             }
 
@@ -303,7 +325,18 @@ fn connection_main<
                     p.set_volume(s.volume)?;
                 }
             }
-            Message::Nothing => (),
+            Message::Nothing => {
+                if last_sample.elapsed().as_secs() > 5 {
+                    let el: TimeVal = time_base_c.elapsed().into();
+                    let one_ms = TimeVal {
+                        sec: 0,
+                        usec: 1_000,
+                    };
+                    let audible_at = el + one_ms;
+                    sample_tx.send((audible_at, Sample::WhiteNoise)).unwrap();
+                    last_sample = Instant::now();
+                }
+            }
         }
     }
 }
