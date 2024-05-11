@@ -116,12 +116,12 @@ fn handle_samples<P: Player>(
                 // this is a triangle wave, going from -64 to 64
                 // ~4800 entries -> 50ms
                 // can chop amplitude and duration if too noisy
-                for i in 0..dec_sample_buf.len() {
+                for (i, item) in dec_sample_buf.iter_mut().enumerate() {
                     if (i % 128) == 0 {
-                        inc = inc * -1;
+                        inc = -inc;
                     }
                     ampl += inc;
-                    dec_sample_buf[i] = ampl / 4;
+                    *item = ampl / 8;
                 }
                 log::info!("White noise");
                 p.write(dec_sample_buf).unwrap();
@@ -136,12 +136,14 @@ fn start_and_sync_sntp() -> anyhow::Result<esp_idf_svc::sntp::EspSntp<'static>> 
 
     let pair = Arc::new((Mutex::new(false), Condvar::new()));
     let pair2 = pair.clone();
+    #[allow(clippy::field_reassign_with_default)] // this rule is here because SntpConf::default()
+    // does some nice things with the default
+    // `servers` and I don't want to replicate that
+    // logic here
     let sntp = unsafe {
-        let conf = esp_idf_svc::sntp::SntpConf {
-            servers: Default::default(),
-            sync_mode: esp_idf_svc::sntp::SyncMode::Smooth,
-            operating_mode: esp_idf_svc::sntp::OperatingMode::Poll,
-        };
+        let mut conf = esp_idf_svc::sntp::SntpConf::default();
+        conf.sync_mode = esp_idf_svc::sntp::SyncMode::Smooth;
+        conf.operating_mode = esp_idf_svc::sntp::OperatingMode::Poll;
         esp_idf_svc::sntp::EspSntp::new_nonstatic_with_callback(&conf, move |d| {
             log::info!("Time sync {:?}", d);
             let (lock, cvar) = &*pair2;
@@ -151,11 +153,13 @@ fn start_and_sync_sntp() -> anyhow::Result<esp_idf_svc::sntp::EspSntp<'static>> 
             cvar.notify_one();
         })?
     };
+    log::info!("SNTP kickstarted, waiting for sync");
 
     // Wait for the thread to start up.
     let (lock, cvar) = &*pair;
     let mut started = lock.lock().unwrap();
     while !*started {
+        log::debug!("Waiting for sntp start thread");
         started = cvar.wait(started).unwrap();
     }
 
@@ -181,8 +185,9 @@ fn main() -> ! {
     let mac = setup(&mut peripherals.modem).unwrap();
     let i2s = peripherals.i2s0;
     let dout = peripherals.pins.gpio19;
-    let bclk = peripherals.pins.gpio21;
-    let ws = peripherals.pins.gpio18;
+
+    let bclk = peripherals.pins.gpio18;
+    let ws = peripherals.pins.gpio21;
 
     let res = app_main(mac, i2s, dout, bclk, ws);
     log::error!("Main returned with {res:?}; will reboot now");
@@ -206,6 +211,7 @@ fn setup(modem: &mut Modem) -> anyhow::Result<String> {
 
     log::info!("Syncing time via SNTP");
     let _sntp = start_and_sync_sntp()?;
+    log::info!("Done syncing time via SNTP");
 
     let mac = format!(
         "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
@@ -214,7 +220,7 @@ fn setup(modem: &mut Modem) -> anyhow::Result<String> {
     Ok(mac)
 }
 
-fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio21, ws: Gpio18) -> anyhow::Result<()> {
+fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> anyhow::Result<()> {
     let mut player_builder = I2sPlayerBuilder::new(i2s, dout, bclk, ws);
 
     let name = "esp32";
@@ -326,13 +332,14 @@ fn connection_main<
                 }
             }
             Message::Nothing => {
+                // 5 seconds to more easily debug whether it's too loud/too long
                 if last_sample.elapsed().as_secs() > 5 {
                     let el: TimeVal = time_base_c.elapsed().into();
-                    let one_ms = TimeVal {
+                    let two_ms = TimeVal {
                         sec: 0,
-                        usec: 1_000,
+                        usec: 2_000,
                     };
-                    let audible_at = el + one_ms;
+                    let audible_at = el + two_ms;
                     sample_tx.send((audible_at, Sample::WhiteNoise)).unwrap();
                     last_sample = Instant::now();
                 }
