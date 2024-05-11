@@ -48,9 +48,9 @@ Wire the pins according to this table:
 
 |ESP | I2s board|
 |----|----|
-D21 | BCLK
+D21 | WSEL
 D19 | DIN
-D18| WSEL
+D18| BCLK
 GND | GND
 3v3 | VIN
 
