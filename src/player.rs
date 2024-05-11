@@ -104,6 +104,7 @@ impl Player for I2sPlayer {
     }
 
     fn write(&mut self, buf: &mut [i16]) -> anyhow::Result<()> {
+        // do not apply soft-volume when playing at 100%
         if self.volume < VOL_STEP_COUNT {
             for s in buf.iter_mut() {
                 *s = ((*s as i32 * self.volume as i32) / VOL_STEP_COUNT as i32) as i16;
