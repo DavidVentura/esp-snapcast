@@ -4,7 +4,7 @@ use snapcast_client::decoder::{Decode, Decoder};
 use snapcast_client::playback::Player;
 use snapcast_client::proto::TimeVal;
 
-use esp_idf_hal::gpio::{Gpio18, Gpio19, Gpio21};
+use esp_idf_hal::gpio::{AnyIOPin, AnyOutputPin};
 use esp_idf_hal::i2s::I2S0;
 use esp_idf_hal::modem::Modem;
 use esp_idf_hal::peripherals::Peripherals;
@@ -20,16 +20,15 @@ mod wifi;
 
 use player::{I2sPlayer, I2sPlayerBuilder};
 
-const SSID: [u8; 32] = [
-    0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a,
-    0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x4a, 0x00,
-];
-const PASS: [u8; 64] = [
-    0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b,
-    0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b,
-    0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b,
-    0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x00,
-];
+#[toml_cfg::toml_config]
+pub struct Config {
+    #[default("")]
+    wifi_ssid: &'static str,
+    #[default("")]
+    wifi_pass: &'static str,
+    #[default("")]
+    server_address: &'static str,
+}
 
 enum Sample {
     Data(Vec<u8>),
@@ -184,30 +183,24 @@ fn main() -> ! {
 
     let mac = setup(&mut peripherals.modem).unwrap();
     let i2s = peripherals.i2s0;
-    let dout = peripherals.pins.gpio19;
+    let dout = peripherals.pins.gpio11.into();
 
-    let bclk = peripherals.pins.gpio18;
-    let ws = peripherals.pins.gpio21;
+    let bclk = peripherals.pins.gpio12.into();
+    let ws = peripherals.pins.gpio10.into();
 
-    let res = app_main(mac, i2s, dout, bclk, ws);
+    let nmute = peripherals.pins.gpio13.into();
+
+    let res = app_main(mac, i2s, dout, bclk, ws, nmute);
     log::error!("Main returned with {res:?}; will reboot now");
     unsafe { esp_restart() };
 }
 
 fn setup(modem: &mut Modem) -> anyhow::Result<String> {
-    let ssid = std::ffi::CStr::from_bytes_until_nul(&SSID)
-        .expect("Invalid build SSID")
-        .to_str()
-        .expect("SSID is not UTF-8");
-    let pass = std::ffi::CStr::from_bytes_until_nul(&PASS)
-        .expect("Invalid build PASS")
-        .to_str()
-        .expect("PASS is not UTF-8");
-
-    log::info!("Connecting to SSID '{ssid}'");
+    log::info!("Connecting to SSID '{:?}'", CONFIG.wifi_ssid);
 
     let nvsp = EspDefaultNvsPartition::take().unwrap();
-    let mac = wifi::configure(ssid, pass, nvsp, modem).expect("Could not configure wifi");
+    let mac = wifi::configure(CONFIG.wifi_ssid, CONFIG.wifi_pass, nvsp, modem)
+        .expect("Could not configure wifi");
 
     log::info!("Syncing time via SNTP");
     let _sntp = start_and_sync_sntp()?;
@@ -220,8 +213,15 @@ fn setup(modem: &mut Modem) -> anyhow::Result<String> {
     Ok(mac)
 }
 
-fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> anyhow::Result<()> {
-    let mut player_builder = I2sPlayerBuilder::new(i2s, dout, bclk, ws);
+fn app_main(
+    mac: String,
+    i2s: I2S0,
+    dout: AnyIOPin,
+    bclk: AnyIOPin,
+    ws: AnyIOPin,
+    nmute: AnyOutputPin,
+) -> anyhow::Result<()> {
+    let mut player_builder = I2sPlayerBuilder::new(i2s, dout, bclk, ws, nmute);
 
     let name = "esp32";
 
@@ -240,7 +240,7 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> a
         // TODO: discover stream
         //let client = client.connect("192.168.2.131:1704")?;
         let client = client
-            .connect("192.168.2.183:1704")
+            .connect(CONFIG.server_address)
             .context("Could not connect to SnapCast server")?;
 
         let player_2 = player.clone();
@@ -328,7 +328,7 @@ fn connection_main<
                 // Delay configuration until player is instantiated
                 start_vol = s.volume;
                 if let Some(p) = p.as_mut() {
-                    p.set_volume(s.volume)?;
+                    p.set_volume(if s.muted { 0 } else { s.volume })?;
                 }
             }
             Message::Nothing => {

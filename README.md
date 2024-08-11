@@ -21,22 +21,15 @@ export CC=xtensa-esp32-elf-gcc
 export CXX=xtensa-esp32-elf-g++
 ```
 
-To build the project, run `make only_build`
+Create a `cfg.toml` file, using `cfg.toml.example` as a template. Update the settings with your WiFi and Snapcast server details.
 
-Note that mDNS (automatic discovery) is not yet implemented, so you must set the IP for the snapcast server on `src/main.rs`.
+To build the project, run `make build`.
+
+Note that mDNS (automatic server discovery) planned, but is not yet implemented.
 
 ### Flashing
 
 Requires [espflash](https://github.com/esp-rs/espflash/tree/main/espflash).
-
-You need to provide the `SSID` and `PASS` environment variables, for your wifi settings:
-
-```bash
-export SSID=<your wifi name>
-export PASS=<your wifi password>
-```
-
-These will be embedded into the firmware file with the `replacer.py` script.
 
 To flash the project into an ESP32 you can run `make flashm`
 

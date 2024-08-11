@@ -2,7 +2,7 @@ use anyhow::anyhow;
 
 use esp_idf_hal::delay::TickType;
 use esp_idf_hal::gpio;
-use esp_idf_hal::gpio::{InputPin, OutputPin};
+use esp_idf_hal::gpio::{AnyOutputPin, InputPin, OutputPin, PinDriver};
 use esp_idf_hal::i2s;
 use esp_idf_hal::i2s::config;
 use esp_idf_hal::i2s::I2S0;
@@ -25,6 +25,7 @@ pub struct I2sPlayerBuilder<
     dout: Option<P>,
     bclk: Option<Q>,
     ws: Option<R>,
+    nmute_pin: Option<AnyOutputPin>,
 }
 
 impl<
@@ -36,12 +37,19 @@ impl<
         R: Peripheral<P = OR> + 'static,
     > I2sPlayerBuilder<OP, OQ, OR, P, Q, R>
 {
-    pub fn new(i2s: I2S0, dout: P, bclk: Q, ws: R) -> I2sPlayerBuilder<OP, OQ, OR, P, Q, R> {
+    pub fn new(
+        i2s: I2S0,
+        dout: P,
+        bclk: Q,
+        ws: R,
+        nmute_pin: AnyOutputPin,
+    ) -> I2sPlayerBuilder<OP, OQ, OR, P, Q, R> {
         I2sPlayerBuilder {
             i2s: Some(i2s),
             dout: Some(dout),
             bclk: Some(bclk),
             ws: Some(ws),
+            nmute_pin: Some(nmute_pin),
         }
     }
     // Heavily inspired from https://github.com/10buttons/awedio_esp32/blob/main/src/lib.rs#L218
@@ -67,6 +75,10 @@ impl<
         let ws = self.ws.take().ok_or(anyhow!("Initialized twice"))?;
         let mut driver = i2s::I2sDriver::new_std_tx(i2s, &i2s_config, bclk, dout, mclk, ws)?;
 
+        let nmute_pin = self.nmute_pin.take().ok_or(anyhow!("Initialized twice"))?;
+        let mut nmute = PinDriver::output(nmute_pin)?;
+        nmute.set_low()?;
+
         // Clear TX buffers
         let data: Vec<u8> = vec![0; 128];
         while driver.preload_data(&data)? > 0 {}
@@ -75,6 +87,7 @@ impl<
             d: driver,
             is_playing: false,
             volume: 0,
+            nmute: nmute,
             sample_rate: ch.metadata.rate() as u16,
         };
         ret.set_volume(20)?;
@@ -85,6 +98,7 @@ pub struct I2sPlayer {
     d: i2s::I2sDriver<'static, i2s::I2sTx>,
     is_playing: bool,
     volume: i16,
+    nmute: PinDriver<'static, AnyOutputPin, gpio::Output>,
     sample_rate: u16,
 }
 
@@ -129,12 +143,15 @@ impl Player for I2sPlayer {
     fn latency_ms(&self) -> anyhow::Result<u16> {
         Ok(0)
     }
+
     fn set_volume(&mut self, val: u8) -> anyhow::Result<()> {
         // convert the 0-100 input range to n/VOL_STEP_COUNT
         if val == 0 {
             self.volume = 0;
+            self.nmute.set_low()?;
             return Ok(());
         }
+        self.nmute.set_high()?;
         let volume_float = f64::from(val);
         let normalized_volume = (volume_float - 1.0) / 99.0;
         let scaled = normalized_volume.powf(2.0) * f64::from(VOL_STEP_COUNT);

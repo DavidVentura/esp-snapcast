@@ -32,6 +32,9 @@ anyhow = "1.0.81"
 esp-idf-hal = "0.43.1"
 esp-idf-sys = "0.34.1"
 heapless = "0.8.0"
+toml-cfg = "0.2.0"
 
 [build-dependencies]
 embuild = "0.31.3"
+anyhow = "=1.0.81"
+toml-cfg = "0.2.0"
