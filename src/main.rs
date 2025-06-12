@@ -11,6 +11,7 @@ use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::*;
 
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{mpsc, mpsc::SyncSender, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -44,12 +45,15 @@ fn handle_samples<P: Player>(
     time_base_c: Instant,
     player: Arc<Mutex<Option<P>>>,
     dec: Arc<Mutex<Option<Decoder>>>,
+    sample_count: Arc<AtomicU16>,
 ) {
     let mut samples_per_ms: u16 = 1; // irrelevant, will be overwritten
 
     let mut free_heap = unsafe { esp_get_free_heap_size() };
 
     while let Ok((client_audible_ts, samples)) = sample_rx.recv() {
+        sample_count.fetch_sub(1, Ordering::AcqRel);
+        let in_buffer = sample_count.load(Ordering::Relaxed);
         let mut valid = true;
         let mut skip_samples = 0;
 
@@ -59,7 +63,7 @@ fn handle_samples<P: Player>(
             if free_heap - free > 512 {
                 // only log somewhat large changes
                 let block = unsafe { heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT) };
-                log::info!("heap low water mark: {free} - {low_water} - {block}");
+                log::info!("heap low water mark: free: {free} - min: {low_water} - smallest block: {block}, in-buffer {in_buffer}");
             }
             free_heap = free;
         }
@@ -72,7 +76,7 @@ fn handle_samples<P: Player>(
         }
 
         if remaining.sec != 0 {
-            log::info!("rem {remaining:?} too far away! hard cutting");
+            log::info!("rem {remaining:?} too far away! hard cutting, in-buffer {in_buffer}");
             valid = false;
         } else if remaining.usec > 0 {
             skip_samples = 0;
@@ -83,7 +87,9 @@ fn handle_samples<P: Player>(
         } else {
             let ms_to_skip = (remaining.usec / 1000).unsigned_abs() as u16;
             skip_samples = ms_to_skip * samples_per_ms;
-            log::info!("skipping {skip_samples} samples = {ms_to_skip}ms");
+            log::info!(
+                "skipping {skip_samples} samples = {ms_to_skip}ms, buffer, in-buffer {in_buffer}"
+            );
         }
 
         if !valid {
@@ -105,7 +111,7 @@ fn handle_samples<P: Player>(
             Sample::Data(encoded) => {
                 let decoded_sample_c = dec.decode_sample(&encoded, dec_sample_buf).unwrap();
                 if skip_samples as usize > decoded_sample_c {
-                    log::info!("Tried to skip way too much, skipping the whole sample");
+                    log::info!("Tried to skip way too much, skipping the whole sample, in-buffer {in_buffer}");
                     continue;
                 }
                 let sample = &mut dec_sample_buf[0..decoded_sample_c];
@@ -130,6 +136,7 @@ fn handle_samples<P: Player>(
             }
         };
     }
+    log::warn!("Ran out of samples");
 }
 
 fn start_and_sync_sntp() -> anyhow::Result<esp_idf_svc::sntp::EspSntp<'static>> {
@@ -232,11 +239,14 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> a
     // >= (960 * 2) for OPUS
     // >= 2880 for PCM
     // >= 4700 for flac
-    let mut dec_samples_buf = vec![0; 4700];
+    let mut dec_samples_buf: Vec<i16> = vec![0; 4700];
 
     let player: Arc<Mutex<Option<I2sPlayer>>> = Arc::new(Mutex::new(None));
+
     loop {
+        let buf_sample_cnt = Arc::new(AtomicU16::new(0));
         // Validated experimentally -- compressed samples are up to 9KiB ; average is 4~5KiB
+        // TODO bump 36?
         let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Sample)>(36);
         let client = Client::new(mac.clone(), name.into());
         // TODO: discover stream
@@ -251,12 +261,20 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> a
         let dec2 = dec.clone();
         let dec3 = dec.clone();
         let decref = &mut dec_samples_buf;
+        let buf_sample_2 = buf_sample_cnt.clone();
 
         std::thread::scope(|s| {
             let tb = client.time_base();
-            s.spawn(move || handle_samples(decref, sample_rx, tb, player_2, dec2));
+            s.spawn(move || handle_samples(decref, sample_rx, tb, player_2, dec2, buf_sample_2));
 
-            let r = connection_main(client, &mut player_builder, player_3, sample_tx, dec3);
+            let r = connection_main(
+                client,
+                &mut player_builder,
+                player_3,
+                sample_tx,
+                dec3,
+                buf_sample_cnt,
+            );
             log::error!("Connection dropped: {r:?}");
             // sample_tx is dropped here - sample_rx dies -> thread expires -> scope finishes
         });
@@ -280,6 +298,7 @@ fn connection_main<
     player: Arc<Mutex<Option<I2sPlayer>>>,
     sample_tx: SyncSender<(TimeVal, Sample)>,
     decoder: Arc<Mutex<Option<Decoder>>>,
+    sample_count: Arc<AtomicU16>,
 ) -> anyhow::Result<()> {
     log::info!("Starting a new connection");
 
@@ -309,19 +328,21 @@ fn connection_main<
                 // to minimize memory usage (number of buffers in mem).
                 // Effectively using the network as a buffer
                 if in_sync {
-                    util::measure_exec(
-                        "send buf to queue",
-                        || {
-                            // the freshest packet is in memory twice - as TCP data
-                            // and cloned into the queue
-                            // FIXME: this to_vec allocates on the hot path
-                            // we should instead write directly to a pre-allocated circular buffer
-                            sample_tx
-                                .send((audible_at, Sample::Data(wc.payload.to_vec())))
-                                .unwrap();
-                        },
-                        Duration::from_millis(1),
-                    );
+                    // the freshest packet is in memory twice - as TCP data
+                    // and cloned into the queue
+                    // FIXME: this to_vec allocates on the hot path
+                    // we should instead write directly to a pre-allocated circular buffer
+                    if let Err(e) =
+                        sample_tx.try_send((audible_at, Sample::Data(wc.payload.to_vec())))
+                    {
+                        log::warn!(
+                            "queue is full, dropping sample: {e}. encoded size was {}",
+                            wc.payload.len()
+                        )
+                    } else {
+                        sample_count.fetch_add(1, Ordering::AcqRel);
+                    }
+
                     last_sample = Instant::now();
                 }
             }
@@ -334,6 +355,10 @@ fn connection_main<
                 if let Some(p) = p.as_mut() {
                     p.set_volume(s.volume)?;
                 }
+            }
+            Message::Expired => {
+                let in_buffer = sample_count.load(Ordering::Relaxed);
+                log::warn!("expired sample got dropped, buffer has {in_buffer} elems");
             }
             Message::Nothing => {
                 // 5 seconds to more easily debug whether it's too loud/too long
