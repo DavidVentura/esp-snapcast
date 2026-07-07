@@ -75,10 +75,15 @@ fn handle_samples<P: Player>(
             remaining.usec -= 1_000_000;
         }
 
-        if remaining.sec != 0 {
+        if remaining.sec < 0 {
+            // more than 1s late; skipping can't save this chunk
+            log::info!("rem {remaining:?} too late! hard cutting, in-buffer {in_buffer}");
+            valid = false;
+        } else if remaining.sec > 8 {
+            // sanity guard: no sane server buffer is this large, the timestamp is bogus
             log::info!("rem {remaining:?} too far away! hard cutting, in-buffer {in_buffer}");
             valid = false;
-        } else if remaining.usec > 0 {
+        } else if remaining.sec > 0 || remaining.usec > 0 {
             skip_samples = 0;
             let tosleep = Duration::from_secs(remaining.sec.unsigned_abs() as u64)
                 + Duration::from_micros(remaining.usec.unsigned_abs() as u64);
@@ -87,9 +92,11 @@ fn handle_samples<P: Player>(
         } else {
             let ms_to_skip = (remaining.usec / 1000).unsigned_abs() as u16;
             skip_samples = ms_to_skip * samples_per_ms;
-            log::info!(
-                "skipping {skip_samples} samples = {ms_to_skip}ms, buffer, in-buffer {in_buffer}"
-            );
+            if ms_to_skip > 0 {
+                log::info!(
+                    "skipping {skip_samples} samples = {ms_to_skip}ms, in-buffer {in_buffer}"
+                );
+            }
         }
 
         if !valid {
@@ -236,18 +243,20 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> a
 
     let dec: Arc<Mutex<Option<Decoder>>> = Arc::new(Mutex::new(None));
 
-    // >= (960 * 2) for OPUS
+    // >= 5760 for OPUS (60ms max frame @48k stereo)
     // >= 2880 for PCM
     // >= 4700 for flac
-    let mut dec_samples_buf: Vec<i16> = vec![0; 4700];
+    let mut dec_samples_buf: Vec<i16> = vec![0; 5760];
 
     let player: Arc<Mutex<Option<I2sPlayer>>> = Arc::new(Mutex::new(None));
 
     loop {
         let buf_sample_cnt = Arc::new(AtomicU16::new(0));
-        // Validated experimentally -- compressed samples are up to 9KiB ; average is 4~5KiB
-        // TODO bump 36?
-        let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Sample)>(36);
+        // Must hold the full server buffer (bufferMs / chunk_ms chunks): the consumer
+        // sleeps on the head chunk until it is audible, so everything else queues here.
+        // 128 slots = 2.5s of 20ms opus chunks (~300-500B each compressed).
+        // FLAC chunks are 4-5KiB (up to 9KiB) -- do not use large server buffers with FLAC.
+        let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Sample)>(128);
         let client = Client::new(mac.clone(), name.into());
         // TODO: discover stream
         //let client = client.connect("192.168.2.131:1704")?;
@@ -265,7 +274,13 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> a
 
         std::thread::scope(|s| {
             let tb = client.time_base();
-            s.spawn(move || handle_samples(decref, sample_rx, tb, player_2, dec2, buf_sample_2));
+            // opus_decode uses ~10-25KiB of VLA scratch on the calling thread's stack
+            std::thread::Builder::new()
+                .stack_size(28 * 1024)
+                .spawn_scoped(s, move || {
+                    handle_samples(decref, sample_rx, tb, player_2, dec2, buf_sample_2)
+                })
+                .unwrap();
 
             let r = connection_main(
                 client,
@@ -307,6 +322,8 @@ fn connection_main<
 
     let mut start_vol = 20;
     let mut last_sample = Instant::now();
+    let mut expired_count: u32 = 0;
+    let mut last_expired_log = Instant::now();
     loop {
         let time_base_c = client.time_base();
         let in_sync = client.synchronized();
@@ -356,9 +373,16 @@ fn connection_main<
                     p.set_volume(s.volume)?;
                 }
             }
-            Message::Expired => {
-                let in_buffer = sample_count.load(Ordering::Relaxed);
-                log::warn!("expired sample got dropped, buffer has {in_buffer} elems");
+            Message::Expired(lateness) => {
+                // rate-limited: logging per expired chunk (~blocking UART) makes the
+                // receive loop slower than the stream and it can never catch up
+                expired_count += 1;
+                if last_expired_log.elapsed().as_secs() >= 1 {
+                    let in_buffer = sample_count.load(Ordering::Relaxed);
+                    log::warn!("{expired_count} expired samples dropped, last was {lateness:?} late, buffer has {in_buffer} elems");
+                    expired_count = 0;
+                    last_expired_log = Instant::now();
+                }
             }
             Message::Nothing => {
                 // 5 seconds to more easily debug whether it's too loud/too long
@@ -370,6 +394,7 @@ fn connection_main<
                     };
                     let audible_at = el + two_ms;
                     sample_tx.send((audible_at, Sample::WhiteNoise)).unwrap();
+                    sample_count.fetch_add(1, Ordering::AcqRel);
                     last_sample = Instant::now();
                 }
             }
