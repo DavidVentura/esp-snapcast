@@ -18,6 +18,17 @@ pub(crate) fn configure(
     // Configure Wifi
     let sysloop = EspSystemEventLoop::take()?;
 
+    // logs association drops (e.g. reason 16 = group key handshake timeout during
+    // the AP's hourly GTK rekey) with reason code and RSSI
+    let sub = sysloop.subscribe::<esp_idf_svc::wifi::WifiEvent, _>(|event| match event {
+        esp_idf_svc::wifi::WifiEvent::StaDisconnected(d) => {
+            log::warn!("wifi disconnected: {d:?}")
+        }
+        esp_idf_svc::wifi::WifiEvent::StaConnected(c) => log::info!("wifi connected: {c:?}"),
+        _ => (),
+    })?;
+    std::mem::forget(sub);
+
     let mut wifi = BlockingWifi::wrap(EspWifi::new(modem, sysloop.clone(), Some(nvs))?, sysloop)?;
 
     wifi.set_configuration(&Configuration::Client(ClientConfiguration {

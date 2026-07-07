@@ -50,10 +50,19 @@ fn handle_samples<P: Player>(
     let mut samples_per_ms: u16 = 1; // irrelevant, will be overwritten
 
     let mut free_heap = unsafe { esp_get_free_heap_size() };
+    let mut window_min = u16::MAX;
+    let mut last_status = Instant::now();
 
     while let Ok((client_audible_ts, samples)) = sample_rx.recv() {
         sample_count.fetch_sub(1, Ordering::AcqRel);
         let in_buffer = sample_count.load(Ordering::Relaxed);
+
+        window_min = window_min.min(in_buffer);
+        if last_status.elapsed().as_secs() >= 10 {
+            log::info!("buffer window: cur {in_buffer} chunks, min {window_min}");
+            window_min = u16::MAX;
+            last_status = Instant::now();
+        }
         let mut valid = true;
         let mut skip_samples = 0;
 
