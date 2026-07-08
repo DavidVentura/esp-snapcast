@@ -1,8 +1,9 @@
 use anyhow::Context;
 use snapcast_client::client::{Client, ConnectedClient, Message};
 use snapcast_client::decoder::{Decode, Decoder};
+use snapcast_client::opus_embedded;
 use snapcast_client::playback::Player;
-use snapcast_client::proto::TimeVal;
+use snapcast_client::proto::{CodecMetadata, TimeVal};
 
 use esp_idf_hal::gpio::{Gpio18, Gpio19, Gpio21};
 use esp_idf_hal::i2s::I2S0;
@@ -11,7 +12,7 @@ use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::*;
 
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{mpsc, mpsc::SyncSender, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -37,6 +38,29 @@ const PASS: [u8; 64] = [
 enum Sample {
     Data(Vec<u8>),
     WhiteNoise,
+}
+
+// Storage for the ~26.6KiB opus decoder state: living in .bss means it is
+// accounted at link time, cannot fail to allocate and cannot fragment the heap.
+// HANDED_OUT pairs with the Decoder's lifetime: claim on Decoder::new, release
+// only after the borrowing Decoder has been dropped.
+struct OpusSlot(core::cell::UnsafeCell<core::mem::MaybeUninit<opus_embedded::Decoder>>);
+// SAFETY: HANDED_OUT serializes access
+unsafe impl Sync for OpusSlot {}
+
+static OPUS_SLOT: OpusSlot =
+    OpusSlot(core::cell::UnsafeCell::new(core::mem::MaybeUninit::uninit()));
+static OPUS_SLOT_HANDED_OUT: AtomicBool = AtomicBool::new(false);
+
+fn claim_opus_slot() -> &'static mut core::mem::MaybeUninit<opus_embedded::Decoder> {
+    let was_handed_out = OPUS_SLOT_HANDED_OUT.swap(true, Ordering::AcqRel);
+    assert!(!was_handed_out, "opus decoder slot is still borrowed");
+    // SAFETY: HANDED_OUT guarantees this is the only live borrow
+    unsafe { &mut *OPUS_SLOT.0.get() }
+}
+
+fn release_opus_slot() {
+    OPUS_SLOT_HANDED_OUT.store(false, Ordering::Release);
 }
 
 fn handle_samples<P: Player>(
@@ -303,7 +327,9 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> a
             // sample_tx is dropped here - sample_rx dies -> thread expires -> scope finishes
         });
         // reset decoder
-        dec.lock().unwrap().take();
+        if dec.lock().unwrap().take().is_some() {
+            release_opus_slot();
+        }
     }
 }
 
@@ -340,7 +366,26 @@ fn connection_main<
         match msg {
             Message::CodecHeader(ch) => {
                 log::info!("Initializing player with: {ch:?}");
-                _ = decoder.lock().unwrap().insert(Decoder::new(&ch)?);
+                let mut dec_guard = decoder.lock().unwrap();
+                // the opus decoder borrows the static slot; the old one must be
+                // dropped and the slot released before the new one can claim it
+                if dec_guard.take().is_some() {
+                    release_opus_slot();
+                }
+                let new_dec = match &ch.metadata {
+                    CodecMetadata::Opus(cfg) => {
+                        match Decoder::new_opus(cfg, claim_opus_slot()) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                release_opus_slot();
+                                return Err(e);
+                            }
+                        }
+                    }
+                    other => anyhow::bail!("unsupported codec: {other:?}"),
+                };
+                _ = dec_guard.insert(new_dec);
+                drop(dec_guard);
                 let mut _a = player.lock().unwrap();
                 let mut _p = _a.insert(pb.init(&ch).unwrap());
                 // right now we can't re-init the player due to the I2S peripheral
