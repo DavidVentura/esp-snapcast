@@ -295,11 +295,17 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> a
         //let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Sample)>(128);
         let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Sample)>(192);
         let client = Client::new(mac.clone(), name.into());
-        // TODO: discover stream
-        //let client = client.connect("192.168.2.131:1704")?;
+        let addr = loop {
+            match snapcast_client::mdns::discover("_snapcast._tcp.local", Duration::from_secs(3)) {
+                Ok(Some(a)) => break a,
+                Ok(None) => log::warn!("no snapcast server found via mDNS, retrying"),
+                Err(e) => log::warn!("mDNS discovery failed: {e:?}, retrying"),
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        };
+        log::info!("discovered snapcast server at {addr}");
         let client = client
-            //.connect("192.168.2.183:1704")
-            .connect("192.168.2.123:1704")
+            .connect(addr)
             .context("Could not connect to SnapCast server")?;
 
         let player_2 = player.clone();
