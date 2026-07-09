@@ -9,6 +9,7 @@ use esp_idf_hal::gpio::{Gpio18, Gpio19, Gpio21};
 use esp_idf_hal::i2s::I2S0;
 use esp_idf_hal::modem::Modem;
 use esp_idf_hal::peripherals::Peripherals;
+use esp_idf_hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::*;
 
@@ -16,6 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{mpsc, mpsc::SyncSender, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+mod cpu;
 mod player;
 mod util;
 mod wifi;
@@ -270,6 +272,7 @@ fn setup(modem: &mut Modem) -> anyhow::Result<String> {
 }
 
 fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> anyhow::Result<()> {
+    cpu::spawn();
     let mut player_builder = I2sPlayerBuilder::new(i2s, dout, bclk, ws);
 
     let name = "esp32";
@@ -295,7 +298,8 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> a
         // TODO: discover stream
         //let client = client.connect("192.168.2.131:1704")?;
         let client = client
-            .connect("192.168.2.183:1704")
+            //.connect("192.168.2.183:1704")
+            .connect("192.168.2.123:1704")
             .context("Could not connect to SnapCast server")?;
 
         let player_2 = player.clone();
@@ -308,6 +312,16 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> a
 
         std::thread::scope(|s| {
             let tb = client.time_base();
+            // Name the next-spawned pthread at creation: std's Builder::name does
+            // not reach the FreeRTOS task name that the CPU monitor reads, esp-idf's
+            // pthread config does. Reset afterwards so other threads keep defaults.
+            ThreadSpawnConfiguration {
+                name: Some(&b"decoder\0"[..]),
+                stack_size: 28 * 1024,
+                ..Default::default()
+            }
+            .set()
+            .unwrap();
             // opus_decode uses ~10-25KiB of VLA scratch on the calling thread's stack
             std::thread::Builder::new()
                 .stack_size(28 * 1024)
@@ -315,6 +329,7 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> a
                     handle_samples(decref, sample_rx, tb, player_2, dec2, buf_sample_2)
                 })
                 .unwrap();
+            ThreadSpawnConfiguration::default().set().unwrap();
 
             let r = connection_main(
                 client,
