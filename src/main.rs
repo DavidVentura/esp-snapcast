@@ -290,9 +290,9 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> a
         let buf_sample_cnt = Arc::new(AtomicU16::new(0));
         // Must hold the full server buffer (bufferMs / chunk_ms chunks): the consumer
         // sleeps on the head chunk until it is audible, so everything else queues here.
-        // 128 slots = 2.5s of 20ms opus chunks (~300-500B each compressed).
-        // FLAC chunks are 4-5KiB (up to 9KiB) -- do not use large server buffers with FLAC.
-        //let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Sample)>(128);
+        // 192 slots = 3.8s of 20ms opus chunks (~300-500B each compressed).
+        // A full queue at FLAC chunk sizes (4-5KiB, up to 9KiB) would OOM; the
+        // try_send drop below is the guard -- do not use large server buffers with FLAC.
         let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Sample)>(192);
         let client = Client::new(mac.clone(), name.into());
         let addr = loop {
@@ -449,9 +449,8 @@ fn connection_main<
             Message::WireChunk(wc, audible_at) => {
                 last_kind = "chunk";
                 chunks += 1;
-                // This will sometimes block on send()
-                // to minimize memory usage (number of buffers in mem).
-                // Effectively using the network as a buffer
+                // Never block here: Time-sync messages share this TCP stream, so
+                // backpressure would stall clock sync. On a full queue, drop the chunk.
                 if in_sync {
                     // the freshest packet is in memory twice - as TCP data
                     // and cloned into the queue
