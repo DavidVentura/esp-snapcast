@@ -289,7 +289,8 @@ fn app_main(mac: String, i2s: I2S0, dout: Gpio19, bclk: Gpio18, ws: Gpio21) -> a
         // sleeps on the head chunk until it is audible, so everything else queues here.
         // 128 slots = 2.5s of 20ms opus chunks (~300-500B each compressed).
         // FLAC chunks are 4-5KiB (up to 9KiB) -- do not use large server buffers with FLAC.
-        let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Sample)>(128);
+        //let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Sample)>(128);
+        let (sample_tx, sample_rx) = mpsc::sync_channel::<(TimeVal, Sample)>(192);
         let client = Client::new(mac.clone(), name.into());
         // TODO: discover stream
         //let client = client.connect("192.168.2.131:1704")?;
@@ -373,15 +374,13 @@ fn connection_main<
                     release_opus_slot();
                 }
                 let new_dec = match &ch.metadata {
-                    CodecMetadata::Opus(cfg) => {
-                        match Decoder::new_opus(cfg, claim_opus_slot()) {
-                            Ok(d) => d,
-                            Err(e) => {
-                                release_opus_slot();
-                                return Err(e);
-                            }
+                    CodecMetadata::Opus(cfg) => match Decoder::new_opus(cfg, claim_opus_slot()) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            release_opus_slot();
+                            return Err(e);
                         }
-                    }
+                    },
                     other => anyhow::bail!("unsupported codec: {other:?}"),
                 };
                 _ = dec_guard.insert(new_dec);
