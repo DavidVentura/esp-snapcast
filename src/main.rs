@@ -381,10 +381,24 @@ fn connection_main<
     let mut last_sample = Instant::now();
     let mut expired_count: u32 = 0;
     let mut last_expired_log = Instant::now();
+    let mut ticks: u64 = 0;
+    let mut chunks: u64 = 0;
+    let mut last_hb = Instant::now();
+    let mut last_kind = "none";
     loop {
+        // heartbeat: if this stops printing, the loop is blocked inside tick()
+        // (a stuck read or, more likely, a stuck write) rather than starved
+        if last_hb.elapsed().as_secs() >= 2 {
+            log::info!(
+                "loop alive: ticks={ticks} chunks={chunks} last={last_kind} in_sync={}",
+                client.synchronized()
+            );
+            last_hb = Instant::now();
+        }
         let time_base_c = client.time_base();
         let in_sync = client.synchronized();
         let msg = client.tick()?;
+        ticks += 1;
         match msg {
             Message::CodecHeader(ch) => {
                 log::info!("Initializing player with: {ch:?}");
@@ -406,15 +420,35 @@ fn connection_main<
                 };
                 _ = dec_guard.insert(new_dec);
                 drop(dec_guard);
-                let mut _a = player.lock().unwrap();
-                let mut _p = _a.insert(pb.init(&ch).unwrap());
-                // right now we can't re-init the player due to the I2S peripheral
-                // requiring ownership of the GPIOs
-                // this `unwrap()` forces the ESP32 to reboot
-                _p.set_volume(start_vol)?;
-                _p.play()?;
+
+                // The I2S peripheral can only be created once (init consumes the
+                // GPIOs), so build the player on the first CodecHeader and reuse it
+                // on every reconnect. The ESP only ever decodes opus 48k stereo, so
+                // the sample rate never changes and no reconfigure is needed.
+                let mut player_guard = player.lock().unwrap();
+                if player_guard.is_none() {
+                    log::info!("initializing I2S player");
+                    *player_guard = Some(pb.init(&ch)?);
+                } else {
+                    let rate = player_guard.as_ref().unwrap().sample_rate();
+                    if rate != ch.metadata.rate() as u16 {
+                        log::warn!(
+                            "codec rate {} != running I2S rate {rate}; I2S cannot be reconfigured, keeping old rate",
+                            ch.metadata.rate()
+                        );
+                    }
+                    log::info!("reusing I2S player across reconnect");
+                }
+                let p = player_guard.as_mut().unwrap();
+                p.set_volume(start_vol)?;
+                log::info!("player: calling play()/tx_enable");
+                p.play()?;
+                log::info!("player: play() returned; streaming");
+                last_kind = "codec";
             }
             Message::WireChunk(wc, audible_at) => {
+                last_kind = "chunk";
+                chunks += 1;
                 // This will sometimes block on send()
                 // to minimize memory usage (number of buffers in mem).
                 // Effectively using the network as a buffer
@@ -439,6 +473,7 @@ fn connection_main<
             }
 
             Message::ServerSettings(s) => {
+                last_kind = "settings";
                 let mut p = player.lock().unwrap();
                 log::info!("Server settings {s:?}");
                 // Delay configuration until player is instantiated
@@ -448,6 +483,7 @@ fn connection_main<
                 }
             }
             Message::Expired(lateness) => {
+                last_kind = "expired";
                 // rate-limited: logging per expired chunk (~blocking UART) makes the
                 // receive loop slower than the stream and it can never catch up
                 expired_count += 1;
@@ -459,6 +495,7 @@ fn connection_main<
                 }
             }
             Message::Nothing => {
+                last_kind = "nothing";
                 // 5 seconds to more easily debug whether it's too loud/too long
                 if last_sample.elapsed().as_secs() > 5 {
                     let el: TimeVal = time_base_c.elapsed().into();
