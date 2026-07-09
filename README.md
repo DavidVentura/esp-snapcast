@@ -3,7 +3,12 @@
 Supported codecs:
 - PCM
 - Flac
-- OPUS (builds, but crashes instantly)
+- OPUS
+
+
+Opus allows for 2.5-3s buffer, Flac allows for max 660ms
+
+I've had issues with Flac due to WiFi flakiness - GTK rekeying and channel scanning by the AP cause 1~2s drops.
 
 ## Building
 
@@ -63,9 +68,9 @@ A pull-down resistor on WSEL makes for quiet reboots; without this, there's a lo
 ## Recommended snapserver settings
 
 ```
-chunk_ms = 30
-buffer = 690
-codec = flac
+chunk_ms = 40
+buffer = 2000
+codec = opus
 ```
 
 ## Bandwidth
@@ -93,12 +98,9 @@ Free heap space:
 |150ms          |167KiB |173KiB |146KiB |
 |500ms          |93KiB  |117KiB |?      |
 |700ms          |31KiB\*| 53KiB |?      |
+|2000ms         | OOM   | OOM   |65KiB  |
 
-\* Got a random OOM a few times, investigating
-
-## Known issues
-
-- OPUS does not work 
+\* Got a random OOM a few times
 
 ## TODO
 
